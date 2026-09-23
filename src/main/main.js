@@ -52,6 +52,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 560,
     titleBarStyle: 'hiddenInset',
+    icon: path.join(__dirname, '..', '..', 'assets', 'icon.png'),
     backgroundColor: '#14161a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -62,6 +63,12 @@ function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  // Packaged builds take the icon from build/icon.icns, but a dev run shows the
+  // stock Electron icon unless the dock is told otherwise.
+  if (process.platform === 'darwin' && app.dock) {
+    try { app.dock.setIcon(path.join(__dirname, '..', '..', 'assets', 'icon.png')); } catch { /* non-fatal */ }
+  }
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);

@@ -439,3 +439,5 @@ textarea.field { resize: vertical; min-height: 130px; line-height: 1.5; }
   background: var(--bg-3); border-radius: 0 7px 7px 0;
   font-size: 12.5px; line-height: 1.55; white-space: pre-wrap;
 }
+
+#brand { display: block; margin-bottom: 4px; opacity: .95; }

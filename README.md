@@ -1,9 +1,14 @@
+<img src="assets/icon.png" width="96" align="left" alt="Seamux icon" />
+
 # Seamux
 
 **See every agent session at once — and which one is waiting on you.**
 
+<br clear="left" />
+
 *Sea* as in the open water you can see clear across, and as in **see**;
-*mux* as in multiplexer. One view over many sessions.
+*mux* as in multiplexer. One view over many sessions — which is the mark: four
+channels flowing into a single node, one of them amber because it wants you.
 
 Switching Terminal tabs to find which agent is waiting on a permission prompt is
 the actual cost of running several projects at once. Seamux removes it: a sidebar of

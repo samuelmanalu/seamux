@@ -19,5 +19,8 @@ secrets-export.json
 context/
 *.log
 
+# --- Icon build intermediates (icon.icns is committed) ---
+build/icon.iconset/
+
 # --- macOS ---
 .DS_Store

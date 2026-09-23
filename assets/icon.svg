@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Seamux mark: four channels fan in from the left and meet at one node —
+    many sessions, a single view. Three are calm; the amber one is the session
+    waiting on you. Strokes meet only at the node so nothing muddies, they are
+    evenly spaced so the rhythm reads, and there are only four of them, thick,
+    so the mark survives at 16px in the dock.
+    Bounding box is centred on the canvas: x 211-810, y 263-761.
+  -->
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0%" stop-color="#1b3a5c"/>
+      <stop offset="100%" stop-color="#091320"/>
+    </linearGradient>
+    <linearGradient id="calm" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6d8fd4"/>
+      <stop offset="100%" stop-color="#a9c6ff"/>
+    </linearGradient>
+    <linearGradient id="alert" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#d59440"/>
+      <stop offset="100%" stop-color="#ffc97d"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="232" fill="url(#sea)"/>
+
+  <g fill="none" stroke-linecap="round" stroke-width="74">
+    <path d="M248 300 C 486 300, 512 512, 646 512" stroke="url(#calm)"/>
+    <path d="M248 441 C 486 441, 512 512, 646 512" stroke="url(#alert)"/>
+    <path d="M248 583 C 486 583, 512 512, 646 512" stroke="url(#calm)"/>
+    <path d="M248 724 C 486 724, 512 512, 646 512" stroke="url(#calm)"/>
+  </g>
+
+  <circle cx="700" cy="512" r="110" fill="#091320"/>
+  <circle cx="700" cy="512" r="72"  fill="#ffc97d"/>
+</svg>

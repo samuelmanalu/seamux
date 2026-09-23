@@ -45,10 +45,12 @@
       "category": "public.app-category.developer-tools",
       "target": [
         "dmg"
-      ]
+      ],
+      "icon": "build/icon.icns"
     },
     "files": [
       "src/**/*",
+      "assets/**/*",
       "package.json"
     ]
   }
