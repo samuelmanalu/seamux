@@ -1,0 +1,23 @@
+# --- Dependencies & build output ---
+node_modules/
+dist/
+out/
+*.tgz
+
+# --- Secrets: never commit ---
+# Seamux keeps credentials in the OS keychain, not in the repo. These patterns
+# exist so a stray local file can never be added by accident.
+*.pem
+*.key
+.env
+.env.*
+seamux-secrets.json
+helm-secrets.json
+secrets-export.json
+
+# --- Local session data ---
+context/
+*.log
+
+# --- macOS ---
+.DS_Store

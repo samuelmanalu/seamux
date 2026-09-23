@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>Seamux</title>
+  <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="modal-root" hidden></div>
+  <div id="app">
+    <aside id="sidebar">
+      <div id="dragbar"></div>
+
+      <div id="alert" hidden></div>
+
+      <div class="section-head">
+        <span>Sessions</span>
+        <button id="new-session" title="New session (⌘T)">+</button>
+      </div>
+      <ul id="session-list"></ul>
+
+      <div class="section-head">
+        <span>Projects</span>
+      </div>
+      <ul id="project-list"></ul>
+
+      <div class="section-head">
+        <span>Context</span>
+        <button id="secrets-new" title="Add context">+</button>
+      </div>
+      <ul id="secrets-list"></ul>
+    </aside>
+
+    <main id="main">
+      <header id="topbar">
+        <div id="crumb">
+          <span id="crumb-title">No session</span>
+          <span id="crumb-path"></span>
+        </div>
+        <div id="crumb-right">
+          <button id="session-context" title="Context for this session">Context</button>
+          <span id="crumb-state"></span>
+        </div>
+      </header>
+
+      <div id="ctxbar" hidden>
+        <span id="ctxbar-text"></span>
+        <span class="spacer"></span>
+        <button id="ctxbar-restart" class="btn primary">Restart session</button>
+        <button id="ctxbar-later" class="btn">Later</button>
+      </div>
+
+      <div id="terminals"></div>
+
+      <div id="empty">
+        <h1>Seamux</h1>
+        <p>See every agent session at once — and which one is waiting on you.</p>
+        <button id="empty-new">Open a project…</button>
+        <p class="hint"><kbd>⌘T</kbd> new session &nbsp;·&nbsp; <kbd>⌘1</kbd>–<kbd>⌘9</kbd> switch &nbsp;·&nbsp; <kbd>⌘D</kbd> detector debug</p>
+      </div>
+
+      <section id="envpanel" hidden>
+        <header id="env-head">
+          <strong>Context</strong>
+          <div id="env-tabs">
+            <button data-tab="session" class="on">Per session</button>
+            <button data-tab="general">General</button>
+          </div>
+          <span id="env-crypto"></span>
+          <span class="spacer"></span>
+          <button id="env-close" title="Close (⌘E)">×</button>
+        </header>
+        <div id="env-body">
+          <div id="env-side">
+            <ul id="env-sets"></ul>
+            <button id="env-new">+ Add context</button>
+            <p id="env-note">
+              Context is handed to every session you start in the projects
+              you choose — API keys, database passwords, service URLs. Anything
+              stored here can be read by the agent and by any command it runs, so
+              only add what those projects need.
+            </p>
+          </div>
+          <div id="env-detail"></div>
+        </div>
+
+        <div id="general-body" hidden>
+          <div id="general-info"></div>
+          <textarea id="general-text" spellcheck="false"></textarea>
+          <div id="general-actions">
+            <button id="general-save" class="btn primary">Save changes</button>
+            <button id="general-revert" class="btn">Discard edits</button>
+            <button id="general-backups" class="btn">Earlier versions…</button>
+            <span id="general-status" class="dim small"></span>
+          </div>
+        </div>
+      </section>
+
+      <section id="debug" hidden>
+        <div class="debug-head">
+          <strong>Detector debug</strong>
+          <span id="debug-verdict"></span>
+        </div>
+        <pre id="debug-screen"></pre>
+      </section>
+    </main>
+  </div>
+
+  <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="../../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="renderer.js"></script>
+  <script src="env-ui.js"></script>
+</body>
+</html>

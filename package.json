@@ -1,0 +1,55 @@
+{
+  "name": "seamux",
+  "version": "0.1.0",
+  "description": "See every agent session at once \u2014 and which one is waiting on you",
+  "main": "src/main/main.js",
+  "author": "Samuel Manalu",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "rebuild": "electron-rebuild -f -w node-pty",
+    "postinstall": "electron-rebuild -f -w node-pty",
+    "dist": "electron-builder --mac",
+    "test": "npm run test:dotenv && npm run test:env && npm run test:general && npm run test:profiles && npm run test:interpreter && npm run test:detector && npm run test:pty && npm run test:e2e && npm run test:env-e2e && npm run test:wizard && npm run test:session-context && npm run test:general-e2e && npm run test:interpret-e2e",
+    "test:detector": "node test/detector.test.js",
+    "test:pty": "SEAMUX_USER_DATA=$(mktemp -d) electron test/pty.smoke.js",
+    "test:e2e": "SEAMUX_USER_DATA=$(mktemp -d) SEAMUX_CLAUDE_BIN=/bin/bash SEAMUX_E2E=$PWD/test/e2e.js electron .",
+    "test:dotenv": "node test/dotenv.test.js",
+    "test:env": "node test/env-manager.test.js",
+    "test:env-e2e": "SEAMUX_USER_DATA=$(mktemp -d) SEAMUX_CLAUDE_BIN=/bin/bash SEAMUX_E2E=$PWD/test/env.e2e.js electron .",
+    "test:wizard": "SEAMUX_USER_DATA=$(mktemp -d) SEAMUX_CLAUDE_BIN=/bin/bash SEAMUX_E2E=$PWD/test/wizard.e2e.js electron .",
+    "test:session-context": "SEAMUX_USER_DATA=$(mktemp -d) SEAMUX_CLAUDE_BIN=/bin/bash SEAMUX_E2E=$PWD/test/session-context.e2e.js electron .",
+    "test:general": "node test/general-context.test.js",
+    "test:general-e2e": "SEAMUX_USER_DATA=$(mktemp -d) SEAMUX_GENERAL_CONTEXT=$(mktemp -d)/CLAUDE.md SEAMUX_E2E=$PWD/test/general.e2e.js node scripts/run-general-e2e.js",
+    "test:interpreter": "node test/interpreter.test.js",
+    "test:interpret-e2e": "node scripts/run-interpret-e2e.js",
+    "test:profiles": "node test/profiles.test.js"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-search": "^0.15.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/headless": "^5.5.0",
+    "@xterm/xterm": "^5.5.0",
+    "node-pty": "^1.0.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.6.0",
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "dev.samuelmanalu.seamux",
+    "productName": "Seamux",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg"
+      ]
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ]
+  }
+}

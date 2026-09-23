@@ -1,0 +1,33 @@
+ ███░         ░░█████████  ██████████ █████     █████ █████ █████  ░░█████ █████
+░░░            ░░░░░░░░░  ░░░░░░░░░░ ░░░░░     ░░░░░ ░░░░░ ░░░░░    ░░░░░ ░░░░░
+
+Tips for getting started:
+1. Ask questions, edit files, or run commands.
+2. Be specific for the best results.
+3. /help for more information.
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Gemini CLI update available! 0.10.0 → 0.60.0                                                               │
+│ Installed via Homebrew. Please update with "brew upgrade".                                                 │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                            │
+│ Get started                                                                                                │
+│                                                                                                            │
+│ How would you like to authenticate for this project?                                                       │
+│                                                                                                            │
+│ ● 1. Login with Google                                                                                     │
+│   2. Use Gemini API Key                                                                                    │
+│   3. Vertex AI                                                                                             │
+│                                                                                                            │
+│ Failed to login. Message: This account requires setting the GOOGLE_CLOUD_PROJECT or                        │
+│ GOOGLE_CLOUD_PROJECT_ID env var. See https://goo.gle/gemini-cli-auth-docs#workspace-gca                    │
+│                                                                                                            │
+│ (Use Enter to select)                                                                                      │
+│                                                                                                            │
+│ Terms of Services and Privacy Notice for Gemini CLI                                                        │
+│                                                                                                            │
+│ https://github.com/google-gemini/gemini-cli/blob/main/docs/tos-privacy.md                                  │
+│                                                                                                            │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

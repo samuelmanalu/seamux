@@ -1,0 +1,33 @@
+▗ ▗   ▖ ▖  Claude Code v2.1.278
+           Opus 5 (1M context) with medium effort · Claude Team
+  ▘▘ ▝▝    /private/tmp/claude-503/-Users-samuelmanalu/f21658ff-cb86-4bc2-8576-6a88dfd6de4d/scratchpad/probe-dir
+
+
+❯ Run this bash command: curl -s https://example.com | head -1                                                          
+
+⏺ Bash(curl -s https://example.com | head -1)
+  ⎿  Waiting…
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+
+   curl -s https://example.com | head -1
+   Fetch example.com and show first line
+
+ This command requires approval
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: curl -s https://example.com
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend
+
+
+
+
+
+
+
