@@ -10,7 +10,7 @@
     "rebuild": "electron-rebuild -f -w node-pty",
     "postinstall": "electron-rebuild -f -w node-pty",
     "dist": "electron-builder --mac",
-    "test": "npm run test:dotenv && npm run test:env && npm run test:general && npm run test:profiles && npm run test:interpreter && npm run test:detector && npm run test:pty && npm run test:e2e && npm run test:env-e2e && npm run test:wizard && npm run test:session-context && npm run test:general-e2e && npm run test:interpret-e2e",
+    "test": "npm run test:dotenv && npm run test:env && npm run test:general && npm run test:profiles && npm run test:shell-path && npm run test:interpreter && npm run test:detector && npm run test:pty && npm run test:e2e && npm run test:env-e2e && npm run test:wizard && npm run test:session-context && npm run test:general-e2e && npm run test:interpret-e2e",
     "test:detector": "node test/detector.test.js",
     "test:pty": "SEAMUX_USER_DATA=$(mktemp -d) electron test/pty.smoke.js",
     "test:e2e": "SEAMUX_USER_DATA=$(mktemp -d) SEAMUX_CLAUDE_BIN=/bin/bash SEAMUX_E2E=$PWD/test/e2e.js electron .",
@@ -23,7 +23,8 @@
     "test:general-e2e": "SEAMUX_USER_DATA=$(mktemp -d) SEAMUX_GENERAL_CONTEXT=$(mktemp -d)/CLAUDE.md SEAMUX_E2E=$PWD/test/general.e2e.js node scripts/run-general-e2e.js",
     "test:interpreter": "node test/interpreter.test.js",
     "test:interpret-e2e": "node scripts/run-interpret-e2e.js",
-    "test:profiles": "node test/profiles.test.js"
+    "test:profiles": "node test/profiles.test.js",
+    "test:shell-path": "node test/shell-path.test.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

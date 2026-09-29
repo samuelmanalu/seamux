@@ -15,6 +15,16 @@ const profiles = require('./profiles');
 // reads a path, so store and secrets both land in the throwaway directory.
 if (process.env.SEAMUX_USER_DATA) app.setPath('userData', process.env.SEAMUX_USER_DATA);
 
+// A packaged app launched from the Dock gets launchd's bare PATH and cannot
+// find `claude`. Put the login shell's PATH in front, before anything spawns.
+// Not for `npm start`: that already inherits the terminal's PATH, which may
+// deliberately differ (an activated venv, say).
+if (app.isPackaged && process.platform !== 'win32') {
+  const { loginShellPath, mergePath } = require('./shell-path');
+  const shellPath = loginShellPath();
+  if (shellPath) process.env.PATH = mergePath(shellPath, process.env.PATH);
+}
+
 let win = null;
 let ptys = null;
 let store = null;
