@@ -11,7 +11,7 @@ const { parseEnv } = require('./dotenv');
 const { GeneralContext } = require('./general-context');
 const { interpret } = require('./interpreter');
 const profiles = require('./profiles');
-const jejakBridge = require('./jejak-bridge');
+const { KnowledgeClient, EXAMPLES: KNOWLEDGE_EXAMPLES } = require('./knowledge');
 const { Board, openingPrompt, rulesText } = require('./board');
 const { extractNextStep } = require('./next-step');
 const { TaskRunner } = require('./task-runner');
@@ -38,6 +38,7 @@ let envs = null;
 let general = null;
 let board = null;
 let runner = null;
+let knowledge = null;
 let activeSessionId = null;
 
 /**
@@ -162,10 +163,15 @@ function profileFor(cwd, explicitId) {
 function buildArgs(profile, instructions, prePrompts, session = {}) {
   const extra = (process.env.SEAMUX_EXTRA_ARGS || process.env.SEAMUX_CLAUDE_ARGS || '')
     .split(' ').filter(Boolean);
-  // Forcing Claude Code's own session id lets Jejak (the knowledge-graph
-  // indexer) be queried later by exactly this pane's id -- see jejak-bridge.js
-  // -- and lets a board task resume the same conversation after a restart.
+  // Forcing Claude Code's own session id lets the knowledge server be asked
+  // later about exactly this pane's session (the Artifacts panel), and lets a
+  // board task resume the same conversation after a restart.
   // Only the claude profile understands --session-id / --resume.
+  // The knowledge server, so the agent can search and save knowledge itself.
+  // --mcp-config takes several values, so it must be followed by another
+  // option, never by the positional opening prompt: --session-id / --resume
+  // always come right after it (both are set whenever this is).
+  if (session.mcpConfig && session.id && profile.id === 'claude') extra.push('--mcp-config', session.mcpConfig);
   if (session.id && profile.id === 'claude') extra.push(session.resume ? '--resume' : '--session-id', session.id);
   return profiles.buildArgs(profile, {
     instructions: instructions || [],
@@ -175,7 +181,7 @@ function buildArgs(profile, instructions, prePrompts, session = {}) {
 }
 
 /** A fresh Claude session id for a pane about to be (re)spawned, or null for
- * profiles Jejak has no hooks for. Never reused across a respawn -- a restart
+ * other profiles. Never reused across a respawn -- a restart
  * is a new conversation, so it gets a new id too.
  *
  * Gated on the RESOLVED command being literally 'claude', not just the
@@ -184,7 +190,7 @@ function buildArgs(profile, instructions, prePrompts, session = {}) {
  * unrecognized --session-id makes bash exit(2) immediately -- confirmed by
  * hand: `bash --session-id x` -> "invalid option", never spawns.
  */
-function newJejakSessionId(profile) {
+function newAgentSessionId(profile) {
   return (profile.id === 'claude' && profiles.commandFor(profile) === 'claude')
     ? crypto.randomUUID() : null;
 }
@@ -321,6 +327,10 @@ function buildMenu() {
           click: () => send('ui:toggleDebug'),
         },
         {
+          label: 'Knowledge Server…',
+          click: () => send('ui:knowledge'),
+        },
+        {
           label: 'Artifacts',
           accelerator: 'CmdOrCtrl+Shift+A',
           click: () => send('ui:toggleArtifacts'),
@@ -354,9 +364,10 @@ async function createSession(o) {
   const profile = profileFor(o.cwd, o.profileId);
   const dropped = profiles.unsupported(profile);
   const resume = !!o.resumeSessionId;
-  const sessionId = resume ? o.resumeSessionId : newJejakSessionId(profile);
+  const sessionId = resume ? o.resumeSessionId : newAgentSessionId(profile);
   const rules = projectRules(o.cwd, profile, { resume });
   const prompts = resume ? [] : [...rules.prompts, ...prePrompts, ...(o.taskPrompts || [])];
+  const mcpConfig = profile.id === 'claude' && profiles.commandFor(profile) === 'claude' ? knowledgeMcpFile() : null;
   const { resumeSessionId, taskPrompts, runCwd, ...rest } = o;
   return ptys.create({
     ...rest,
@@ -364,8 +375,8 @@ async function createSession(o) {
     projectCwd: o.cwd,
     projectRuleCount: rules.count, rulesVia: rules.via, rulesVersion: rules.version,
     command: o.command || profiles.commandFor(profile),
-    args: buildArgs(profile, [...rules.instructions, ...instructions], prompts, { id: sessionId, resume }),
-    jejakSessionId: sessionId,
+    args: buildArgs(profile, [...rules.instructions, ...instructions], prompts, { id: sessionId, resume, mcpConfig }),
+    agentSessionId: sessionId,
     env: vars, envSetIds: ids, envSetNames: names, envWarnings: warnings,
     instructionCount: profile.instructions.mode === 'none' ? 0 : instructions.length,
     prePromptCount: profile.prompt.mode === 'none' ? 0 : prompts.length,
@@ -374,6 +385,90 @@ async function createSession(o) {
     envWarnings: [...warnings, ...(dropped.length && (instructions.length || prompts.length)
       ? [`${profile.label} has no way to take ${dropped.join(' or ')} — that part of the context was not applied.`]
       : [])],
+  });
+}
+
+/**
+ * Write the knowledge server's agent config where Claude Code can read it
+ * (--mcp-config). Owner-only, because it can carry the server's headers.
+ * Returns null when there is no server or agent access is off.
+ */
+function knowledgeMcpFile() {
+  const cfg = knowledge && knowledge.agentConfig();
+  const file = path.join(app.getPath('userData'), 'knowledge-mcp.json');
+  const fs = require('fs');
+  if (!cfg) { try { fs.unlinkSync(file); } catch { /* none */ } return null; }
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch { /* best effort */ }
+  return file;
+}
+
+/** Record a rule on the knowledge server, if a "save" call is set up. Never blocks the UI. */
+function saveRuleToKnowledge(cwd, text) {
+  if (!knowledge || !knowledge.mapped('save')) return;
+  knowledge.saveRule({ rule: text, 'project.path': cwd, 'project.name': projectName(cwd) })
+    .then(() => send('knowledge:status', { ok: true, message: 'Rule saved to the knowledge server.' }))
+    .catch((err) => send('knowledge:status', { ok: false, message: `Could not save the rule to the knowledge server: ${err.message}` }));
+}
+
+function wireKnowledge() {
+  knowledge = new KnowledgeClient({
+    getConfig: () => store.data.knowledge || null,
+    secrets: {
+      read: () => secrets.data,
+      write: (v) => { secrets.data = v; secrets.save(); },
+    },
+    openExternal: (url) => shell.openExternal(url),
+  });
+
+  // Header values never leave the main process; the renderer sees names only.
+  const describe = () => {
+    const k = secrets.data.knowledge || {};
+    return {
+      config: store.data.knowledge || null,
+      examples: KNOWLEDGE_EXAMPLES,
+      headerNames: Object.keys(k.headers || {}),
+      signedIn: !!(k.oauth && k.oauth.tokens),
+      configured: knowledge.configured(),
+      mapped: { save: knowledge.mapped('save'), importRules: knowledge.mapped('importRules'), sessionArtifacts: knowledge.mapped('sessionArtifacts') },
+    };
+  };
+  ipcMain.handle('knowledge:get', () => describe());
+  ipcMain.handle('knowledge:set', async (_e, { config, headers }) => {
+    store.data.knowledge = config && config.server && config.server.type !== 'none' ? config : null;
+    store.save();
+    if (headers) {   // { NAME: value } replaces all headers; null keeps them
+      secrets.data = { ...secrets.data, knowledge: { ...(secrets.data.knowledge || {}), headers } };
+      secrets.save();
+    }
+    await knowledge.close();
+    send('knowledge:changed', describe());
+    return describe();
+  });
+  // Test the settings on screen without saving them: a throwaway client with
+  // the draft config, and the draft headers over the saved ones.
+  ipcMain.handle('knowledge:test', async (_e, draft) => {
+    const probe = draft ? new KnowledgeClient({
+      getConfig: () => draft.config,
+      secrets: {
+        read: () => (draft.headers
+          ? { ...secrets.data, knowledge: { ...(secrets.data.knowledge || {}), headers: draft.headers } }
+          : secrets.data),
+        write: () => {},
+      },
+    }) : knowledge;
+    try { return { ok: true, tools: await probe.listTools() }; }
+    catch (err) { return { ok: false, error: err.message, needsSignIn: !!err.needsSignIn }; }
+    finally { if (probe !== knowledge) await probe.close(); }
+  });
+  ipcMain.handle('knowledge:signIn', async () => {
+    try { await knowledge.signIn(); send('knowledge:changed', describe()); return { ok: true }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('knowledge:signOut', async () => { await knowledge.signOut(); send('knowledge:changed', describe()); return describe(); });
+  ipcMain.handle('knowledge:importRules', async (_e, cwd) => {
+    try { return { ok: true, rules: await knowledge.importRules({ 'project.path': cwd, 'project.name': projectName(cwd) }) }; }
+    catch (err) { return { ok: false, error: err.message }; }
   });
 }
 
@@ -437,7 +532,7 @@ async function spawnTask(task) {
     resumeSessionId: resume,
     taskPrompts: resume ? [] : [openingPrompt(task)],
   });
-  if (!resume) board.setSessionId(task.id, meta.jejakSessionId || null);
+  if (!resume) board.setSessionId(task.id, meta.agentSessionId || null);
   send('session:created', meta);
   return meta;
 }
@@ -512,10 +607,12 @@ function wireBoard() {
   ipcMain.handle('rules:add', (_e, { cwd, text }) => {
     const r = board.addRule(cwd, text);
     store.addProject(cwd);
+    saveRuleToKnowledge(cwd, r.text);
     return { rule: r, told: announceRules(cwd, `added "${r.text}"`) };
   });
   ipcMain.handle('rules:update', (_e, { cwd, id, text }) => {
     const r = board.updateRule(cwd, id, text);
+    saveRuleToKnowledge(cwd, r.text);
     return { rule: r, told: announceRules(cwd, `changed a rule to "${r.text}"`) };
   });
   ipcMain.handle('rules:remove', (_e, { cwd, id }) => {
@@ -574,7 +671,7 @@ function wireIpc() {
     const ids = envSetIds || (current ? current.envSetIds : []) || [];
     const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
     const profile = profileFor(null, (current || {}).profileId);
-    const jejakSessionId = newJejakSessionId(profile);
+    const agentSessionId = newAgentSessionId(profile);
     // A task's restarted terminal is a fresh conversation, so it gets the
     // task's opening message again.
     const task = current && current.taskId ? board.get(current.taskId) : null;
@@ -582,14 +679,14 @@ function wireIpc() {
     const rules = projectRules(projectCwd, profile);
     const prompts = [...rules.prompts, ...prePrompts, ...(task ? [openingPrompt(task)] : [])];
     const info = ptys.restart(id, {
-      vars, args: buildArgs(profile, [...rules.instructions, ...instructions], prompts, { id: jejakSessionId }),
-      jejakSessionId,
+      vars, args: buildArgs(profile, [...rules.instructions, ...instructions], prompts, { id: agentSessionId }),
+      agentSessionId,
       envSetIds: ids, envSetNames: names, envWarnings: warnings,
       instructionCount: instructions.length, prePromptCount: prompts.length,
     });
     ptys.setRulesInfo(id, { count: rules.count, via: rules.via, version: rules.version });
     // A restart is a new conversation; a task resumes the new one from now on.
-    if (task) board.setSessionId(task.id, jejakSessionId);
+    if (task) board.setSessionId(task.id, agentSessionId);
     if (current && current.taskId) runner.emit('changed');
     return ptys.list().find((s) => s.id === id) || info;
   });
@@ -630,9 +727,15 @@ function wireIpc() {
   });
   ipcMain.handle('sessions:replay', (_e, id) => ptys.replay(id));
   ipcMain.handle('sessions:screenText', (_e, id) => ptys.screenText(id));
-  ipcMain.handle('artifacts:forSession', (_e, id) => {
+  // What a terminal's session produced, from the knowledge server's
+  // "sessionArtifacts" call. Never rejects: a missing or broken server shows
+  // as a message in the panel.
+  ipcMain.handle('artifacts:forSession', async (_e, id) => {
     const info = ptys.list().find((s) => s.id === id);
-    return jejakBridge.artifactsForSession(info ? info.jejakSessionId : null);
+    if (!knowledge.mapped('sessionArtifacts')) return { ok: false, unavailable: true, artifacts: [] };
+    if (!info || !info.agentSessionId) return { ok: true, artifacts: [] };
+    try { return { ok: true, artifacts: await knowledge.sessionArtifacts({ 'session.id': info.agentSessionId }) }; }
+    catch (err) { return { ok: false, artifacts: [], error: err.message }; }
   });
   ipcMain.handle('sessions:markRead', (_e, id) => {
     activeSessionId = id;
@@ -839,6 +942,7 @@ app.whenReady().then(() => {
   general = new GeneralContext(process.env.SEAMUX_GENERAL_CONTEXT || undefined);
   wirePtys();
   wireBoard();
+  wireKnowledge();
   wireIpc();
   buildMenu();
   createWindow();
@@ -866,4 +970,7 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => { if (ptys) ptys.dispose(); });
+app.on('before-quit', () => {
+  if (ptys) ptys.dispose();
+  if (knowledge) knowledge.close();
+});

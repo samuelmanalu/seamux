@@ -27,7 +27,8 @@ const r = spawnSync(require('electron'), ['.'], {
     SHELL: '/bin/bash',
     SEAMUX_GEMINI_BIN: path.join(stubDir, 'gemini'),
     SEAMUX_USER_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'seamux-ud-')),
-    SEAMUX_E2E: path.resolve(__dirname, '..', 'test', 'board.e2e.js'),
+    // Another suite can reuse these stubs: node scripts/run-board-e2e.js test/x.e2e.js
+    SEAMUX_E2E: path.resolve(process.argv[2] || path.join(__dirname, '..', 'test', 'board.e2e.js')),
   },
 });
 fs.rmSync(stubDir, { recursive: true, force: true });

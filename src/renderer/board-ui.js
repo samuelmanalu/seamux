@@ -475,11 +475,27 @@
       }) : [h('p', { class: 'dim small', text: 'No rules yet.' })]));
     }
 
+    const kn = window.__knowledge && window.__knowledge.state;
+    const importBtn = kn && kn.mapped && kn.mapped.importRules
+      ? h('button', { class: 'btn', text: 'Import from knowledge server…', onclick: async () => {
+        m.close();   // the picker takes the dialog's place; reopened below
+        const chosen = await window.__knowledge.pickImportedRules(cwd, name);
+        // The picker replaced this dialog; reopen it with the result.
+        if (chosen && chosen.length) {
+          let added = 0;
+          for (const text of chosen) { try { await H.rulesAdd(cwd, text); added++; } catch { /* duplicate */ } }
+          flash(`Imported ${added} rule${added === 1 ? '' : 's'}.`);
+        }
+        rulesDialog(cwd);
+      } })
+      : null;
+
     const m = UI().openModal({
       title: `Rules for ${name}`,
       subtitle: 'Written once here, followed by every terminal in the project. Claude receives them in its system prompt, so they survive long sessions.',
       body: h('div', { class: 'r-body' }, list, note, h('label', { class: 'dim small', text: 'Add a rule' }), add, err),
       footer: h('div', { class: 'modal-actions' },
+        importBtn,
         h('button', { class: 'btn', text: 'Close', onclick: () => m.close() }),
         h('button', { class: 'btn primary', text: 'Add rule', onclick: async () => {
           try { const r = await H.rulesAdd(cwd, add.value); add.value = ''; err.hidden = true; told(r.told); await load(); } catch (e) { fail(e); }

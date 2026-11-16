@@ -10,6 +10,7 @@
 </head>
 <body>
   <div id="modal-root" hidden></div>
+  <div id="toast" hidden></div>
   <div id="app">
     <aside id="sidebar">
       <div id="dragbar"></div>
@@ -44,7 +45,7 @@
           <button id="toggle-board" title="Board (⌘B)">Board</button>
           <button id="session-rules" hidden>Rules</button>
           <button id="session-context" title="Context for this session">Context</button>
-          <button id="session-artifacts" title="Artifacts from this session (⌘⇧A)">Artifacts</button>
+          <button id="session-artifacts" title="Artifacts from this session (⌘⇧A)" hidden>Artifacts</button>
           <span id="crumb-state"></span>
         </div>
       </header>
@@ -150,5 +151,6 @@
   <script src="renderer.js"></script>
   <script src="env-ui.js"></script>
   <script src="board-ui.js"></script>
+  <script src="knowledge-ui.js"></script>
 </body>
 </html>

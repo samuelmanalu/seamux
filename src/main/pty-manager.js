@@ -210,9 +210,9 @@ class PtyManager extends EventEmitter {
       instructionCount: opts.instructionCount || 0,
       prePromptCount: opts.prePromptCount || 0,
       // Claude Code's own session id (passed at spawn via --session-id), so
-      // this pane can be correlated with what Jejak indexed for it. Null for
+      // this pane can be matched with what the knowledge server holds for it. Null for
       // profiles that have no such concept (Gemini, Shell, Codex).
-      jejakSessionId: opts.jejakSessionId || null,
+      agentSessionId: opts.agentSessionId || null,
       // The board task this pane belongs to, if it was started from a card.
       taskId: opts.taskId || null,
       // The project this pane belongs to. Usually its folder; a task running
@@ -343,7 +343,7 @@ class PtyManager extends EventEmitter {
   }
 
   /** Relaunch in place so the pane, id and position survive. */
-  restart(id, { vars, args, envSetIds, envSetNames, envWarnings, instructionCount, prePromptCount, jejakSessionId } = {}) {
+  restart(id, { vars, args, envSetIds, envSetNames, envWarnings, instructionCount, prePromptCount, agentSessionId } = {}) {
     const s = this.sessions.get(id);
     if (!s) return null;
 
@@ -354,7 +354,7 @@ class PtyManager extends EventEmitter {
     if (prePromptCount !== undefined) s.prePromptCount = prePromptCount;
     // A restart is a fresh conversation (see note above), so it gets a fresh
     // Claude session id too -- never reuse one across a respawn.
-    if (jejakSessionId !== undefined) s.jejakSessionId = jejakSessionId;
+    if (agentSessionId !== undefined) s.agentSessionId = agentSessionId;
     try { if (!s.exited) s.proc.kill(); } catch { /* already gone */ }
 
     const proc = pty.spawn(s.command, s.args, {
@@ -431,7 +431,7 @@ class PtyManager extends EventEmitter {
       contextPending: s.contextPending,
       profileId: s.profileId,
       profileLabel: s.profileLabel,
-      jejakSessionId: s.jejakSessionId || null,
+      agentSessionId: s.agentSessionId || null,
       taskId: s.taskId || null,
       projectRuleCount: s.projectRuleCount || 0,
       rulesVia: s.rulesVia || 'none',

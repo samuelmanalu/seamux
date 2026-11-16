@@ -376,18 +376,22 @@ async function refreshArtifacts() {
     return;
   }
   const pane = panes.get(activeId);
-  if (!pane.meta.jejakSessionId) {
+  if (!pane.meta.agentSessionId) {
     el.artifactsSub.textContent = pane.meta.profileLabel || '';
     el.artifactsBody.innerHTML =
-      '<div class="artifacts-empty">This profile has no Jejak session id (only Claude Code panes are correlated), so nothing to show.</div>';
+      '<div class="artifacts-empty">Only Claude Code terminals have a session id the knowledge server can be asked about.</div>';
     return;
   }
   el.artifactsBody.innerHTML = '<div class="artifacts-empty">Loading…</div>';
-  const { ok, artifacts, error } = await H.artifactsForSession(activeId);
+  const { ok, artifacts, error, unavailable } = await H.artifactsForSession(activeId);
   if (activeId !== pane.meta.id) return; // switched panes while awaiting
-  el.artifactsSub.textContent = pane.meta.jejakSessionId.slice(0, 8);
+  el.artifactsSub.textContent = pane.meta.agentSessionId.slice(0, 8);
+  if (unavailable) {
+    el.artifactsBody.innerHTML = '<div class="artifacts-empty">Set up a knowledge server with a session artifacts call (View → Knowledge Server…) to list what each session produced.</div>';
+    return;
+  }
   if (!ok) {
-    el.artifactsBody.innerHTML = `<div class="artifacts-error">Could not reach Jejak: ${escapeHtml(error || 'unknown error')}</div>`;
+    el.artifactsBody.innerHTML = `<div class="artifacts-error">Could not reach the knowledge server: ${escapeHtml(error || 'unknown error')}</div>`;
     return;
   }
   if (!artifacts.length) {

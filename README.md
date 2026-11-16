@@ -133,6 +133,32 @@ that option (Gemini CLI) in its opening message. A plain shell gets none.
 - **The Rules chip** in the top bar says what the terminal on screen received:
   `Rules 2 ✓`, or a warning when it has none or an old copy.
 
+### Knowledge server
+
+Seamux can use any MCP server you have installed as a knowledge base (View →
+**Knowledge Server…**). Connect it by command (a local server) or by URL, with
+optional headers or browser sign-in (OAuth); header values and sign-in tokens
+are kept in Seamux's encrypted store. Then map the calls Seamux makes to that
+server's own tools:
+
+| Call | When | Placeholders |
+|---|---|---|
+| **Save** | a project rule is added or changed | `{rule}`, `{project.path}`, `{project.name}` |
+| **Import rules** | **Import from knowledge server…** in a project's rules; you pick which to add | `{project.path}`, `{project.name}` |
+| **Session artifacts** | the **Artifacts** panel (⌘⇧A) for a terminal | `{session.id}` |
+
+Each call names a tool and gives its arguments as JSON with placeholders.
+Results can be JSON or text; for text, an optional line pattern keeps only
+matching lines (its first group, if any, is the value). Leave a tool empty to
+turn that call off; the Artifacts button only appears when its call is set up.
+
+With **agent access** on, every Claude Code terminal also gets the server
+through `--mcp-config`, so agents can search and save knowledge themselves.
+
+**Test connection** checks the settings on screen without saving them.
+**Fill in the Jejak example** shows a complete mapping for one such server;
+nothing in Seamux depends on it.
+
 Tasks are stored in `~/Library/Application Support/Seamux/board.json`.
 
 ## Context
