@@ -200,6 +200,8 @@ class PtyManager extends EventEmitter {
       // this pane can be correlated with what Jejak indexed for it. Null for
       // profiles that have no such concept (Gemini, Shell, Codex).
       jejakSessionId: opts.jejakSessionId || null,
+      // The board task this pane belongs to, if it was started from a card.
+      taskId: opts.taskId || null,
       envKeys: Object.keys(opts.env || {}),
       envWarnings: opts.envWarnings || [],
       // What the process was actually launched with, so we can tell whether a
@@ -395,6 +397,7 @@ class PtyManager extends EventEmitter {
       rule: s.rule,
       unread: s.unread,
       exitCode: s.exitCode,
+      exited: !!s.exited,
       createdAt: s.createdAt,
       envSetIds: s.envSetIds,
       envSetNames: s.envSetNames,
@@ -407,6 +410,7 @@ class PtyManager extends EventEmitter {
       profileId: s.profileId,
       profileLabel: s.profileLabel,
       jejakSessionId: s.jejakSessionId || null,
+      taskId: s.taskId || null,
     };
   }
 

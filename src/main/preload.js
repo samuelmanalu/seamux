@@ -15,6 +15,15 @@ contextBridge.exposeInMainWorld('seamux', {
   screenText: (id) => ipcRenderer.invoke('sessions:screenText', id),
   artifactsForSession: (id) => ipcRenderer.invoke('artifacts:forSession', id),
 
+  boardGet: () => ipcRenderer.invoke('board:get'),
+  boardCreate: (task) => ipcRenderer.invoke('board:create', task),
+  boardUpdate: (id, patch) => ipcRenderer.invoke('board:update', { id, patch }),
+  boardMove: (id, status) => ipcRenderer.invoke('board:move', { id, status }),
+  boardStart: (id) => ipcRenderer.invoke('board:start', id),
+  boardRemove: (id) => ipcRenderer.invoke('board:remove', id),
+  boardSetLimit: (cwd, limit) => ipcRenderer.invoke('board:setLimit', { cwd, limit }),
+  boardSetGlobalLimit: (limit) => ipcRenderer.invoke('board:setGlobalLimit', limit),
+
   write: (id, data) => ipcRenderer.send('sessions:write', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('sessions:resize', { id, cols, rows }),
 
@@ -63,6 +72,11 @@ contextBridge.exposeInMainWorld('seamux', {
   onToggleDebug: (fn) => ipcRenderer.on('ui:toggleDebug', () => fn()),
   onToggleEnv: (fn) => ipcRenderer.on('ui:toggleEnv', () => fn()),
   onToggleArtifacts: (fn) => ipcRenderer.on('ui:toggleArtifacts', () => fn()),
+  onToggleBoard: (fn) => ipcRenderer.on('ui:toggleBoard', () => fn()),
+  onNewTask: (fn) => ipcRenderer.on('ui:newTask', () => fn()),
+  onNextNeeds: (fn) => ipcRenderer.on('ui:nextNeeds', () => fn()),
+  onBoardChanged: (fn) => ipcRenderer.on('board:changed', (_e, p) => fn(p)),
+  onSessionCreated: (fn) => ipcRenderer.on('session:created', (_e, p) => fn(p)),
   onNewSession: (fn) => ipcRenderer.on('ui:newSession', () => fn()),
   onOpenProject: (fn) => ipcRenderer.on('ui:openProject', (_e, p) => fn(p)),
 });

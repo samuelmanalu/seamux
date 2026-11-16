@@ -10,7 +10,7 @@
     "rebuild": "electron-rebuild -f -w node-pty",
     "postinstall": "electron-rebuild -f -w node-pty",
     "dist": "electron-builder --mac",
-    "test": "npm run test:dotenv && npm run test:env && npm run test:general && npm run test:profiles && npm run test:shell-path && npm run test:jejak && npm run test:artifact-card && npm run test:interpreter && npm run test:detector && npm run test:pty && npm run test:e2e && npm run test:env-e2e && npm run test:wizard && npm run test:session-context && npm run test:artifacts-e2e && npm run test:general-e2e && npm run test:interpret-e2e",
+    "test": "npm run test:dotenv && npm run test:env && npm run test:general && npm run test:profiles && npm run test:shell-path && npm run test:jejak && npm run test:artifact-card && npm run test:board && npm run test:task-runner && npm run test:interpreter && npm run test:detector && npm run test:pty && npm run test:e2e && npm run test:env-e2e && npm run test:wizard && npm run test:session-context && npm run test:artifacts-e2e && npm run test:board-e2e && npm run test:general-e2e && npm run test:interpret-e2e",
     "test:detector": "node test/detector.test.js",
     "test:pty": "SEAMUX_USER_DATA=$(mktemp -d) electron test/pty.smoke.js",
     "test:e2e": "SEAMUX_USER_DATA=$(mktemp -d) SEAMUX_CLAUDE_BIN=/bin/bash SEAMUX_E2E=$PWD/test/e2e.js electron .",
@@ -27,7 +27,10 @@
     "test:shell-path": "node test/shell-path.test.js",
     "test:jejak": "node test/jejak-bridge.test.js",
     "test:artifacts-e2e": "SEAMUX_USER_DATA=$(mktemp -d) SEAMUX_CLAUDE_BIN=/bin/bash SEAMUX_E2E=$PWD/test/artifacts.e2e.js electron .",
-    "test:artifact-card": "node test/artifact-card.test.js"
+    "test:artifact-card": "node test/artifact-card.test.js",
+    "test:board": "node test/board.test.js",
+    "test:task-runner": "node test/task-runner.test.js",
+    "test:board-e2e": "node scripts/run-board-e2e.js"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

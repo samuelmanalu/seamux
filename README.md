@@ -84,6 +84,34 @@ npx electron . -- ~/proj-a ~/proj-b          # or as arguments
 
 Projects you open are remembered in `~/Library/Application Support/Seamux/seamux.json`.
 
+## Board
+
+**⌘B** opens the board: one lane per project, one column per status. Each task
+is a card, and a card owns exactly one terminal running one agent, so you can
+see what every terminal is for and what comes next.
+
+- **⌘N** new task: a title, a brief, and the agent (or the project's default).
+  The brief is sent to the agent as its opening message.
+- **Start** opens the task's terminal. Open a running card (**Enter** or
+  double-click) to go to its terminal; **⌘B** comes back.
+- **Limits.** Each lane header shows live task terminals against the project's
+  limit (`2 / 3`); click it to change the limit. There is also an overall limit
+  across projects in the board's header. Idle terminals count. A task started
+  beyond a limit waits in **Queued** and starts by itself when a terminal closes
+  or ends.
+- **Resume.** Closing a task's terminal sends it back to Ready. Starting it
+  again continues the same Claude Code conversation (`claude --resume`) instead
+  of beginning a new one. After a restart of Seamux, tasks that were running
+  wait in Ready to be resumed.
+- **Moving.** Drag a card within its lane, or press **M**. Moving a running
+  task to Review or Done keeps its terminal running until you close it. A task
+  whose terminal is live cannot be deleted.
+- **Keys on the board:** arrows or **H J K L** to move between cards, **S**
+  start, **E** edit, **N** new task, **⌘J** jump to the next terminal that needs
+  you. Backlog and Done are hidden until you turn them on.
+
+Tasks are stored in `~/Library/Application Support/Seamux/board.json`.
+
 ## Context
 
 Two kinds, both reached from the **Context** screen (**⌘E**, or **+** in the sidebar).

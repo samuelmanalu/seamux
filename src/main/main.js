@@ -12,6 +12,8 @@ const { GeneralContext } = require('./general-context');
 const { interpret } = require('./interpreter');
 const profiles = require('./profiles');
 const jejakBridge = require('./jejak-bridge');
+const { Board, openingPrompt } = require('./board');
+const { TaskRunner } = require('./task-runner');
 
 // Tests must never write into the real user's config. Set before anything
 // reads a path, so store and secrets both land in the throwaway directory.
@@ -33,6 +35,8 @@ let store = null;
 let secrets = null;
 let envs = null;
 let general = null;
+let board = null;
+let runner = null;
 let activeSessionId = null;
 
 /**
@@ -154,13 +158,14 @@ function profileFor(cwd, explicitId) {
   return profiles.get(id, store.customProfiles());
 }
 
-function buildArgs(profile, instructions, prePrompts, jejakSessionId) {
+function buildArgs(profile, instructions, prePrompts, session = {}) {
   const extra = (process.env.SEAMUX_EXTRA_ARGS || process.env.SEAMUX_CLAUDE_ARGS || '')
     .split(' ').filter(Boolean);
   // Forcing Claude Code's own session id lets Jejak (the knowledge-graph
-  // indexer) be queried later by exactly this pane's id -- see jejak-bridge.js.
-  // Only the claude profile understands --session-id.
-  if (jejakSessionId && profile.id === 'claude') extra.push('--session-id', jejakSessionId);
+  // indexer) be queried later by exactly this pane's id -- see jejak-bridge.js
+  // -- and lets a board task resume the same conversation after a restart.
+  // Only the claude profile understands --session-id / --resume.
+  if (session.id && profile.id === 'claude') extra.push(session.resume ? '--resume' : '--session-id', session.id);
   return profiles.buildArgs(profile, {
     instructions: instructions || [],
     prePrompts: prePrompts || [],
@@ -262,6 +267,16 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+T',
           click: () => send('ui:newSession'),
         },
+        {
+          label: 'New Task…',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => send('ui:newTask'),
+        },
+        {
+          label: 'Next Task That Needs You',
+          accelerator: 'CmdOrCtrl+J',
+          click: () => send('ui:nextNeeds'),
+        },
         { type: 'separator' },
         ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
           label: `Go to Session ${n}`,
@@ -277,6 +292,11 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
+        {
+          label: 'Board',
+          accelerator: 'CmdOrCtrl+B',
+          click: () => send('ui:toggleBoard'),
+        },
         {
           label: 'Context',
           accelerator: 'CmdOrCtrl+E',
@@ -304,33 +324,133 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+/**
+ * Start a terminal. Plain sessions and board tasks both come through here.
+ *
+ * For a task: `taskId` ties the pane to its card, `taskPrompts` are added to
+ * the opening prompt, and `resumeSessionId` continues an earlier conversation
+ * instead of starting a new one. A resumed conversation already has its
+ * opening prompt, so none is sent again.
+ */
+async function createSession(o) {
+  if (o.cwd) store.addProject(o.cwd);
+  // Explicit ids win over the project's bindings, so a one-off session can
+  // opt into a different environment without changing the binding.
+  const ids = o.envSetIds || (o.cwd ? store.envSetsFor(o.cwd) : []);
+  const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
+  const profile = profileFor(o.cwd, o.profileId);
+  const dropped = profiles.unsupported(profile);
+  const resume = !!o.resumeSessionId;
+  const sessionId = resume ? o.resumeSessionId : newJejakSessionId(profile);
+  const prompts = resume ? [] : [...prePrompts, ...(o.taskPrompts || [])];
+  const { resumeSessionId, taskPrompts, ...rest } = o;
+  return ptys.create({
+    ...rest,
+    command: o.command || profiles.commandFor(profile),
+    args: buildArgs(profile, instructions, prompts, { id: sessionId, resume }),
+    jejakSessionId: sessionId,
+    env: vars, envSetIds: ids, envSetNames: names, envWarnings: warnings,
+    instructionCount: profile.instructions.mode === 'none' ? 0 : instructions.length,
+    prePromptCount: profile.prompt.mode === 'none' ? 0 : prompts.length,
+    profileId: profile.id, profileLabel: profile.label, rules: profile.rules,
+    // Say what this agent cannot carry rather than dropping it silently.
+    envWarnings: [...warnings, ...(dropped.length && (instructions.length || prompts.length)
+      ? [`${profile.label} has no way to take ${dropped.join(' or ')} — that part of the context was not applied.`]
+      : [])],
+  });
+}
+
+/** Spawn the one terminal a board task owns. Used by the TaskRunner. */
+async function spawnTask(task) {
+  const profile = profileFor(task.cwd, task.agent);
+  // Only the real claude binary can resume; anything else starts fresh.
+  const canResume = profile.id === 'claude' && profiles.commandFor(profile) === 'claude';
+  const resume = canResume && task.sessionId ? task.sessionId : null;
+  const meta = await createSession({
+    cwd: task.cwd,
+    title: task.title,
+    profileId: profile.id,
+    taskId: task.id,
+    resumeSessionId: resume,
+    taskPrompts: resume ? [] : [openingPrompt(task)],
+  });
+  if (!resume) board.setSessionId(task.id, meta.jejakSessionId || null);
+  send('session:created', meta);
+  return meta;
+}
+
+/** Everything the board view needs, in one payload. */
+function boardSnapshot() {
+  const panes = ptys.list();
+  const known = new Map(store.projects().map((p) => [p.cwd, p]));
+  // A task keeps its lane even if its project was removed from the sidebar.
+  for (const t of board.list()) {
+    if (!known.has(t.cwd)) known.set(t.cwd, { cwd: t.cwd, name: path.basename(t.cwd) || t.cwd, envSetIds: [] });
+  }
+  const projects = [...known.values()].map((p) => {
+    const live = panes.filter((s) => s.taskId && !s.exited && s.cwd === p.cwd).length;
+    return { ...p, limit: board.limitFor(p.cwd), live };
+  });
+  const tasks = board.list().map((t) => {
+    const pane = panes.find((s) => s.taskId === t.id);
+    return {
+      ...t,
+      pane: pane ? { id: pane.id, state: pane.state, reason: pane.reason, exited: !!pane.exited } : null,
+    };
+  });
+  return {
+    projects,
+    tasks,
+    globalLimit: board.globalLimit(),
+    liveTotal: panes.filter((s) => s.taskId && !s.exited).length,
+  };
+}
+
+function wireBoard() {
+  board = new Board(path.join(app.getPath('userData'), 'board.json'));
+  // No terminal survives an app restart: tasks left running go back to Ready
+  // and resume their conversation when started again.
+  board.recoverAfterRestart();
+  runner = new TaskRunner({ board, ptys, spawn: spawnTask });
+  runner.on('changed', () => send('board:changed', boardSnapshot()));
+  ptys.on('exit', (p) => {
+    const info = ptys.list().find((s) => s.id === p.id);
+    if (info && info.taskId) runner.terminalEnded().catch(() => {});
+  });
+
+  ipcMain.handle('board:get', () => boardSnapshot());
+  ipcMain.handle('board:create', async (_e, o) => {
+    const t = board.create(o || {});
+    store.addProject(t.cwd);
+    runner.emit('changed');
+    if (o && o.start) await runner.start(t.id);
+    return board.get(t.id);
+  });
+  ipcMain.handle('board:update', (_e, { id, patch }) => {
+    const t = board.update(id, patch);
+    runner.emit('changed');
+    return t;
+  });
+  ipcMain.handle('board:move', (_e, { id, status }) => runner.move(id, status));
+  ipcMain.handle('board:start', (_e, id) => runner.start(id));
+  ipcMain.handle('board:remove', (_e, id) => { runner.remove(id); return true; });
+  ipcMain.handle('board:setLimit', async (_e, { cwd, limit }) => {
+    const v = board.setLimit(cwd, limit);
+    runner.emit('changed');
+    await runner.pump();
+    return v;
+  });
+  ipcMain.handle('board:setGlobalLimit', async (_e, limit) => {
+    const v = board.setGlobalLimit(limit);
+    runner.emit('changed');
+    await runner.pump();
+    return v;
+  });
+}
+
 function wireIpc() {
   ipcMain.handle('sessions:list', () => ptys.list());
-  ipcMain.handle('sessions:create', async (_e, opts) => {
-    const o = opts || {};
-    if (o.cwd) store.addProject(o.cwd);
-    // Explicit ids win over the project's bindings, so a one-off session can
-    // opt into a different environment without changing the binding.
-    const ids = o.envSetIds || (o.cwd ? store.envSetsFor(o.cwd) : []);
-    const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
-    const profile = profileFor(o.cwd, o.profileId);
-    const dropped = profiles.unsupported(profile);
-    const jejakSessionId = newJejakSessionId(profile);
-    return ptys.create({
-      ...o,
-      command: o.command || profiles.commandFor(profile),
-      args: buildArgs(profile, instructions, prePrompts, jejakSessionId),
-      jejakSessionId,
-      env: vars, envSetIds: ids, envSetNames: names, envWarnings: warnings,
-      instructionCount: profile.instructions.mode === 'none' ? 0 : instructions.length,
-      prePromptCount: profile.prompt.mode === 'none' ? 0 : prePrompts.length,
-      profileId: profile.id, profileLabel: profile.label, rules: profile.rules,
-      // Say what this agent cannot carry rather than dropping it silently.
-      envWarnings: [...warnings, ...(dropped.length && (instructions.length || prePrompts.length)
-        ? [`${profile.label} has no way to take ${dropped.join(' or ')} — that part of the context was not applied.`]
-        : [])],
-    });
-  });
+  ipcMain.handle('sessions:create', (_e, opts) => createSession(opts || {}));
 
   // Context is owned by the session. Changing it rewrites the live context file
   // at once; the process's own env keeps its spawn-time values until a restart.
@@ -351,12 +471,20 @@ function wireIpc() {
     const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
     const profile = profileFor(null, (current || {}).profileId);
     const jejakSessionId = newJejakSessionId(profile);
-    return ptys.restart(id, {
-      vars, args: buildArgs(profile, instructions, prePrompts, jejakSessionId),
+    // A task's restarted terminal is a fresh conversation, so it gets the
+    // task's opening message again.
+    const task = current && current.taskId ? board.get(current.taskId) : null;
+    const prompts = task ? [...prePrompts, openingPrompt(task)] : prePrompts;
+    const info = ptys.restart(id, {
+      vars, args: buildArgs(profile, instructions, prompts, { id: jejakSessionId }),
       jejakSessionId,
       envSetIds: ids, envSetNames: names, envWarnings: warnings,
-      instructionCount: instructions.length, prePromptCount: prePrompts.length,
+      instructionCount: instructions.length, prePromptCount: prompts.length,
     });
+    // A restart is a new conversation; a task resumes the new one from now on.
+    if (task) board.setSessionId(task.id, jejakSessionId);
+    if (current && current.taskId) runner.emit('changed');
+    return info;
   });
 
   // ---- general context (the global CLAUDE.md every session reads) ----
@@ -387,7 +515,12 @@ function wireIpc() {
   ipcMain.handle('general:backups', () => general.backups());
   ipcMain.handle('general:restore', (_e, name) => general.restore(name));
   ipcMain.handle('sessions:kill', (_e, id) => ptys.kill(id));
-  ipcMain.handle('sessions:remove', (_e, id) => { ptys.remove(id); updateBadge(); });
+  ipcMain.handle('sessions:remove', async (_e, id) => {
+    const info = ptys.list().find((s) => s.id === id);
+    ptys.remove(id);
+    updateBadge();
+    if (info && info.taskId) await runner.paneClosed(info.taskId);
+  });
   ipcMain.handle('sessions:replay', (_e, id) => ptys.replay(id));
   ipcMain.handle('sessions:screenText', (_e, id) => ptys.screenText(id));
   ipcMain.handle('artifacts:forSession', (_e, id) => {
@@ -598,6 +731,7 @@ app.whenReady().then(() => {
   envs = new EnvManager(secrets);
   general = new GeneralContext(process.env.SEAMUX_GENERAL_CONTEXT || undefined);
   wirePtys();
+  wireBoard();
   wireIpc();
   buildMenu();
   createWindow();
@@ -612,7 +746,7 @@ app.whenReady().then(() => {
   // Test seam: an end-to-end suite drives the real window through this.
   if (process.env.SEAMUX_E2E) {
     win.webContents.once('did-finish-load', () => {
-      require(process.env.SEAMUX_E2E)({ win, ptys, store, app });
+      require(process.env.SEAMUX_E2E)({ win, ptys, store, app, board, runner });
     });
   }
 

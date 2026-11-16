@@ -960,6 +960,7 @@ function chooseProfile(currentId) {
 
 window.__envUI = {
   chooseProfile,
+  openModal, confirmDialog,
   toggleEnv, refreshEnv, startWizard, refreshSecretsSidebar, chooseContext,
   switchTab, loadGeneral, saveGeneral,
   get selectedSetId() { return selectedId; },

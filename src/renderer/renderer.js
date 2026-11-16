@@ -104,6 +104,8 @@ function activate(id) {
   if (!pane) return;
 
   activeId = id;
+  // Opening a terminal leaves the board.
+  if (window.__board && window.__board.visible) window.__board.hide();
   for (const [pid, p] of panes) p.el.classList.toggle('active', pid === id);
   el.empty.hidden = true;
 
@@ -425,6 +427,9 @@ H.onExit(({ id }) => {
   const pane = panes.get(id);
   if (pane) pane.term.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n');
 });
+
+// A board task started a terminal (possibly by itself, from the queue).
+H.onSessionCreated((meta) => { if (!panes.has(meta.id)) addPane(meta); });
 
 H.onNewSession(newSession);
 H.onOpenProject(async ({ cwd, name }) => { await openProject(cwd, name); refreshProjects(); });
