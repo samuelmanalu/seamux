@@ -12,8 +12,10 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'seamux-stub-'));
-fs.writeFileSync(path.join(stubDir, 'claude'),
-  '#!/bin/bash\nprintf "STUB_ARGS:[%s]\\n" "$*"\nexec /bin/bash --norc -i\n', { mode: 0o755 });
+for (const name of ['claude', 'gemini']) {
+  fs.writeFileSync(path.join(stubDir, name),
+    '#!/bin/bash\nprintf "STUB_ARGS:[%s]\\n" "$*"\nexec /bin/bash --norc -i\n', { mode: 0o755 });
+}
 
 const env = { ...process.env };
 delete env.SEAMUX_CLAUDE_BIN;
@@ -23,6 +25,7 @@ const r = spawnSync(require('electron'), ['.'], {
     ...env,
     PATH: `${stubDir}:${process.env.PATH}`,
     SHELL: '/bin/bash',
+    SEAMUX_GEMINI_BIN: path.join(stubDir, 'gemini'),
     SEAMUX_USER_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'seamux-ud-')),
     SEAMUX_E2E: path.resolve(__dirname, '..', 'test', 'board.e2e.js'),
   },

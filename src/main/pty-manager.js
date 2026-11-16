@@ -120,8 +120,21 @@ class PtyManager extends EventEmitter {
   queueInjection(id, text) {
     const s = this.sessions.get(id);
     if (!s || s.exited || !text) return false;
-    s.pendingInjection = String(text).replace(/\s*\n\s*/g, ' ').trim();
+    const line = String(text).replace(/\s*\n\s*/g, ' ').trim();
+    // Several notices can pile up before the session reaches its prompt (a
+    // context change, then a new rule): deliver all of them, newest last.
+    s.pendingInjection = s.pendingInjection ? `${s.pendingInjection} ${line}` : line;
     return true;
+  }
+
+  /** Record which project rules this session has, and how they reached it. */
+  setRulesInfo(id, { count, via, version }) {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    if (count !== undefined) s.projectRuleCount = count;
+    if (via !== undefined) s.rulesVia = via;
+    if (version !== undefined) s.rulesVersion = version;
+    return this.describe(s);
   }
 
   /**
@@ -202,6 +215,15 @@ class PtyManager extends EventEmitter {
       jejakSessionId: opts.jejakSessionId || null,
       // The board task this pane belongs to, if it was started from a card.
       taskId: opts.taskId || null,
+      // The project this pane belongs to. Usually its folder; a task running
+      // in its own worktree still belongs to the project it came from.
+      projectCwd: opts.projectCwd || cwd,
+      // Project rules this session received: how many, how ('system' prompt,
+      // 'opening' message, 'notice' typed in later, or 'none'), and which
+      // version of the project's rules that was.
+      projectRuleCount: opts.projectRuleCount || 0,
+      rulesVia: opts.rulesVia || 'none',
+      rulesVersion: opts.rulesVersion || null,
       envKeys: Object.keys(opts.env || {}),
       envWarnings: opts.envWarnings || [],
       // What the process was actually launched with, so we can tell whether a
@@ -411,6 +433,10 @@ class PtyManager extends EventEmitter {
       profileLabel: s.profileLabel,
       jejakSessionId: s.jejakSessionId || null,
       taskId: s.taskId || null,
+      projectRuleCount: s.projectRuleCount || 0,
+      rulesVia: s.rulesVia || 'none',
+      rulesVersion: s.rulesVersion || null,
+      projectCwd: s.projectCwd || s.cwd,
     };
   }
 

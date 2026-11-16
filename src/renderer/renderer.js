@@ -217,9 +217,11 @@ function renderCrumb() {
     el.crumbTitle.textContent = 'No session';
     el.crumbPath.textContent = '';
     el.crumbState.textContent = '';
+    if (window.__board) window.__board.updateChip(null);
     return;
   }
   const m = pane.meta;
+  if (window.__board) window.__board.updateChip(m);
   el.crumbTitle.textContent = m.title;
   el.crumbPath.title = m.profileLabel ? `Agent: ${m.profileLabel}` : '';
   el.crumbPath.textContent = m.cwd;

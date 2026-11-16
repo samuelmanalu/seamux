@@ -106,9 +106,32 @@ see what every terminal is for and what comes next.
 - **Moving.** Drag a card within its lane, or press **M**. Moving a running
   task to Review or Done keeps its terminal running until you close it. A task
   whose terminal is live cannot be deleted.
+- **Status follows the terminal.** A started task sits in **Running** while its
+  agent works and in **Needs you** when it asks something or finishes its turn.
+  **Waiting on others** is for reviews, deploy watches or another team: moving a
+  card there asks what it waits for, and the card shows that and for how long.
+- **Next step.** When a Claude Code agent stops, its latest message becomes the
+  card's next step, so the board says where each piece of work stands.
+- **Peek (Space).** Look at a task's terminal from the board and answer a quick
+  prompt (1, 2, 3, Enter, Esc, or a typed reply) without leaving it.
 - **Keys on the board:** arrows or **H J K L** to move between cards, **S**
   start, **E** edit, **N** new task, **⌘J** jump to the next terminal that needs
   you. Backlog and Done are hidden until you turn them on.
+
+### Project rules
+
+Rules are written once per project (**Rules** in a lane, or **⌘⇧P**) and every
+terminal in the project gets them at launch: Claude Code in its system prompt,
+so they hold for the whole session and survive compaction; an agent without
+that option (Gemini CLI) in its opening message. A plain shell gets none.
+
+- **Promote a rule (⌘⇧R).** Select the text of a rule in any terminal and
+  press ⌘⇧R; it opens prefilled in the project's rules.
+- **Changes reach running terminals.** Adding, editing or removing a rule
+  types a notice with the full current list into every running agent terminal
+  of the project, at its next prompt.
+- **The Rules chip** in the top bar says what the terminal on screen received:
+  `Rules 2 ✓`, or a warning when it has none or an old copy.
 
 Tasks are stored in `~/Library/Application Support/Seamux/board.json`.
 

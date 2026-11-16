@@ -49,7 +49,7 @@ module.exports = async function ({ win, ptys, app, board }) {
     await sleep(1200);
     const pA = paneOf(alpha.id);
     check('starting a task opens one terminal for it', !!pA && !pA.exited);
-    check('the task moves to In progress', board.get(alpha.id).status === 'active' && await columnOf(alpha.id) === 'active');
+    check('the task moves to Running or Needs you', board.get(alpha.id).status === 'active' && ['running', 'needs'].includes(await columnOf(alpha.id)), await columnOf(alpha.id));
     const aArgs = pA ? argsOf(pA.id) : [];
     const sid = aArgs[aArgs.indexOf('--session-id') + 1];
     check('claude gets a session id', aArgs.includes('--session-id') && UUID.test(sid || ''), S(aArgs));
@@ -114,6 +114,75 @@ module.exports = async function ({ win, ptys, app, board }) {
     await js(`document.querySelector('#boardview').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`);
     await sleep(300);
     check('Enter opens the selected card', await js(`activeId === ${S(pA2.id)}`));
+
+    /* ---------------- phase 2: rules, waiting, next step, peek ---------------- */
+    const rules = await js(`window.seamux.rulesAdd(${S(cwd)}, 'Never push to main')`);
+    check('a rule can be added to a project', rules.rule && rules.rule.text === 'Never push to main');
+    check('running agent terminals are counted to be told', rules.told === 1, S(rules));
+    let told = false;
+    for (let i = 0; i < 20 && !told; i++) {
+      await sleep(300);
+      const s = ptys.sessions.get(pA2.id);
+      told = /Project rules changed: added "Never push to main"/.test(ptys.replay(pA2.id)) || /Project rules changed/.test(s.pendingInjection || '');
+    }
+    check('a running Claude terminal is told about the new rule', told);
+    check('the shell terminal is not sent the notice', !/Project rules changed/.test(ptys.replay(pB.id)));
+
+    const delta = await js(`window.seamux.boardCreate({ cwd: ${S(cwd)}, title: 'Delta', brief: 'Check rules', status: 'ready' })`);
+    await js(`window.seamux.boardSetLimit(${S(cwd)}, 5)`);
+    await js(`window.__board.start(${S(delta.id)})`);
+    await sleep(1200);
+    const pD = paneOf(delta.id);
+    const dArgs = pD ? argsOf(pD.id) : [];
+    const sys = dArgs[dArgs.indexOf('--append-system-prompt') + 1] || '';
+    check('a new Claude terminal gets the rules in its system prompt', /Project rules for .*\n1\. Never push to main/.test(sys), S(dArgs));
+    check('the pane records the rules it received', pD && pD.projectRuleCount === 1 && pD.rulesVia === 'system');
+    await js(`activate(${S(pD.id)})`);
+    await sleep(200);
+    check('the rules chip says the terminal has them', (await js("document.querySelector('#session-rules').textContent")) === 'Rules 1 ✓');
+    await js(`activate(${S(pB.id)})`);
+    await sleep(200);
+    check('the chip warns when a terminal has no way to take rules', (await js("document.querySelector('#session-rules').textContent")) === 'Rules not delivered');
+
+    const gem = await js(`window.seamux.boardCreate({ cwd: ${S(cwd)}, title: 'Gee', agent: 'gemini', status: 'ready' })`);
+    await js(`window.__board.start(${S(gem.id)})`);
+    await sleep(1200);
+    const pG = paneOf(gem.id);
+    const gArgs = pG ? argsOf(pG.id) : [];
+    const gi = gArgs[gArgs.indexOf('-i') + 1] || '';
+    check('Gemini gets the rules in its opening message, before the task', /^Project rules for [\s\S]*\n1\. Never push to main\n\nTask: Gee$/.test(gi), S(gArgs));
+    check('and the pane says so', pG && pG.rulesVia === 'opening');
+
+    await js(`window.seamux.boardWait(${S(beta.id)}, 'code review on 2 MRs')`);
+    await js('window.__board.show()');
+    await sleep(300);
+    check('Waiting on others has its own column', await columnOf(beta.id) === 'waiting');
+    check('the card says what it waits for', /Waiting: code review on 2 MRs/.test(await cardText(beta.id)), await cardText(beta.id));
+
+    ptys.write(pD.id, "printf '\\xe2\\x8f\\xba Next I will drop the three config keys\\n'\r");
+    await sleep(600);
+    ptys.emit('status', { ...ptys.list().find((x) => x.id === pD.id), state: 'running' });
+    ptys.emit('status', { ...ptys.list().find((x) => x.id === pD.id), state: 'idle' });
+    await sleep(300);
+    check('when the agent stops, its latest message becomes the next step', board.get(delta.id).nextStep === 'Next I will drop the three config keys', board.get(delta.id).nextStep);
+    check('the card shows it', /Next I will drop the three config keys/.test(await cardText(delta.id)), await cardText(delta.id));
+
+    await js(`window.__board.select(${S(delta.id)})`);
+    await js(`document.querySelector('#boardview').dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))`);
+    await sleep(900);
+    check('Space peeks at the terminal from the board', await js("!document.querySelector('#board-peek').hidden") && /STUB_ARGS/.test(await js("document.querySelector('.p-screen').textContent")));
+    await js("[...document.querySelectorAll('#board-peek .p-keys button')].find(b => b.textContent === 'Enter').click()");
+    await js("document.querySelector('#peek-reply').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+    await sleep(200);
+    check('Esc closes the peek and stays on the board', await js("document.querySelector('#board-peek').hidden") && await js("!document.querySelector('#boardview').hidden"));
+
+    await js(`activate(${S(pD.id)}); panes.get(${S(pD.id)}).term.selectLines(0, 0)`);
+    const selected = await js(`panes.get(${S(pD.id)}).term.getSelection().trim()`);
+    await js('window.__board.rulesDialog && null');
+    win.webContents.send('ui:promoteRule');
+    await sleep(500);
+    check('promote opens the rules dialog with the selected text', selected.length > 0 && (await js("document.querySelector('#rule-new')?.value")) === selected, selected);
+    await js(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
 
     /* new task dialog */
     await js('window.__board.show()');

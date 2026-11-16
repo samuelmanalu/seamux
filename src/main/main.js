@@ -12,7 +12,8 @@ const { GeneralContext } = require('./general-context');
 const { interpret } = require('./interpreter');
 const profiles = require('./profiles');
 const jejakBridge = require('./jejak-bridge');
-const { Board, openingPrompt } = require('./board');
+const { Board, openingPrompt, rulesText } = require('./board');
+const { extractNextStep } = require('./next-step');
 const { TaskRunner } = require('./task-runner');
 
 // Tests must never write into the real user's config. Set before anything
@@ -202,17 +203,19 @@ function newJejakSessionId(profile) {
  */
 async function reconcileSessions(filter = {}) {
   for (const info of ptys.list()) {
-    if (filter.cwd && info.cwd !== filter.cwd) continue;
+    const project = info.projectCwd || info.cwd;
+    if (filter.cwd && project !== filter.cwd) continue;
     const session = ptys.sessions.get(info.id);
     if (!session) continue;
 
-    const ids = session.contextOverridden ? (info.envSetIds || []) : store.envSetsFor(info.cwd);
+    const ids = session.contextOverridden ? (info.envSetIds || []) : store.envSetsFor(project);
     const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
     const before = (info.envKeys || []).join(',');
 
-    const profile = profileFor(info.cwd, info.profileId);
+    const profile = profileFor(project, info.profileId);
+    const rules = projectRules(project, profile);
     ptys.setContext(info.id, {
-      vars, args: buildArgs(profile, instructions, prePrompts),
+      vars, args: buildArgs(profile, [...rules.instructions, ...instructions], [...rules.prompts, ...prePrompts]),
       envSetIds: ids, envSetNames: names, envWarnings: warnings,
       instructionCount: profile.instructions.mode === 'none' ? 0 : instructions.length,
       prePromptCount: profile.prompt.mode === 'none' ? 0 : prePrompts.length,
@@ -271,6 +274,16 @@ function buildMenu() {
           label: 'New Task…',
           accelerator: 'CmdOrCtrl+N',
           click: () => send('ui:newTask'),
+        },
+        {
+          label: 'Promote Selection to Project Rule…',
+          accelerator: 'CmdOrCtrl+Shift+R',
+          click: () => send('ui:promoteRule'),
+        },
+        {
+          label: 'Project Rules…',
+          accelerator: 'CmdOrCtrl+Shift+P',
+          click: () => send('ui:projectRules'),
         },
         {
           label: 'Next Task That Needs You',
@@ -342,12 +355,16 @@ async function createSession(o) {
   const dropped = profiles.unsupported(profile);
   const resume = !!o.resumeSessionId;
   const sessionId = resume ? o.resumeSessionId : newJejakSessionId(profile);
-  const prompts = resume ? [] : [...prePrompts, ...(o.taskPrompts || [])];
-  const { resumeSessionId, taskPrompts, ...rest } = o;
+  const rules = projectRules(o.cwd, profile, { resume });
+  const prompts = resume ? [] : [...rules.prompts, ...prePrompts, ...(o.taskPrompts || [])];
+  const { resumeSessionId, taskPrompts, runCwd, ...rest } = o;
   return ptys.create({
     ...rest,
+    cwd: runCwd || o.cwd,
+    projectCwd: o.cwd,
+    projectRuleCount: rules.count, rulesVia: rules.via, rulesVersion: rules.version,
     command: o.command || profiles.commandFor(profile),
-    args: buildArgs(profile, instructions, prompts, { id: sessionId, resume }),
+    args: buildArgs(profile, [...rules.instructions, ...instructions], prompts, { id: sessionId, resume }),
     jejakSessionId: sessionId,
     env: vars, envSetIds: ids, envSetNames: names, envWarnings: warnings,
     instructionCount: profile.instructions.mode === 'none' ? 0 : instructions.length,
@@ -358,6 +375,52 @@ async function createSession(o) {
       ? [`${profile.label} has no way to take ${dropped.join(' or ')} — that part of the context was not applied.`]
       : [])],
   });
+}
+
+function projectName(cwd) {
+  const p = store.projects().find((x) => x.cwd === cwd);
+  return (p && p.name) || path.basename(cwd || '') || cwd;
+}
+
+/**
+ * How a project's rules reach a new terminal. They belong in the system
+ * prompt, where they hold for the whole session and survive compaction. An
+ * agent with no such option gets them in its opening message instead, which
+ * a resumed conversation does not receive again.
+ */
+function projectRules(cwd, profile, { resume = false } = {}) {
+  const list = cwd ? board.rulesFor(cwd) : [];
+  const version = cwd ? board.rulesVersion(cwd) : null;
+  const text = rulesText(list, cwd ? projectName(cwd) : '');
+  const none = { instructions: [], prompts: [], count: list.length, version };
+  if (!text) return { ...none, via: 'none' };
+  if (profile.instructions.mode === 'flag') return { ...none, instructions: [text], via: 'system' };
+  if (profile.prompt.mode !== 'none' && !resume) return { ...none, prompts: [text], via: 'opening' };
+  return { ...none, via: 'none' };
+}
+
+/**
+ * Tell every running terminal of a project that its rules changed. Typed in
+ * at the session's next prompt, with the full current list, so a session
+ * never has to piece the rules together from several notices. Plain shells
+ * are skipped: the text would run as a command.
+ */
+function announceRules(cwd, change) {
+  const list = board.rulesFor(cwd);
+  const version = board.rulesVersion(cwd);
+  const current = list.length
+    ? `Current project rules: ${list.map((r, i) => `${i + 1}. ${r.text}`).join(' ')}`
+    : 'This project has no rules now.';
+  let told = 0;
+  for (const info of ptys.list()) {
+    if (info.exited || (info.projectCwd || info.cwd) !== cwd || info.profileId === 'shell') continue;
+    if (!ptys.queueInjection(info.id, `[Seamux] Project rules changed: ${change}. ${current} Follow them for the rest of this session.`)) continue;
+    const via = info.rulesVia === 'none' ? 'notice' : info.rulesVia;
+    send('session:status', ptys.setRulesInfo(info.id, { count: list.length, version, via }));
+    told++;
+  }
+  runner.emit('changed');
+  return told;
 }
 
 /** Spawn the one terminal a board task owns. Used by the TaskRunner. */
@@ -388,14 +451,17 @@ function boardSnapshot() {
     if (!known.has(t.cwd)) known.set(t.cwd, { cwd: t.cwd, name: path.basename(t.cwd) || t.cwd, envSetIds: [] });
   }
   const projects = [...known.values()].map((p) => {
-    const live = panes.filter((s) => s.taskId && !s.exited && s.cwd === p.cwd).length;
-    return { ...p, limit: board.limitFor(p.cwd), live };
+    const live = panes.filter((s) => s.taskId && !s.exited && (s.projectCwd || s.cwd) === p.cwd).length;
+    return { ...p, limit: board.limitFor(p.cwd), live, ruleCount: board.rulesFor(p.cwd).length, rulesVersion: board.rulesVersion(p.cwd) };
   });
   const tasks = board.list().map((t) => {
     const pane = panes.find((s) => s.taskId === t.id);
     return {
       ...t,
-      pane: pane ? { id: pane.id, state: pane.state, reason: pane.reason, exited: !!pane.exited } : null,
+      pane: pane ? {
+        id: pane.id, state: pane.state, reason: pane.reason, exited: !!pane.exited,
+        projectRuleCount: pane.projectRuleCount, rulesVia: pane.rulesVia, rulesVersion: pane.rulesVersion,
+      } : null,
     };
   });
   return {
@@ -418,7 +484,45 @@ function wireBoard() {
     if (info && info.taskId) runner.terminalEnded().catch(() => {});
   });
 
+  // The agent's latest message becomes the card's next step when it stops.
+  const lastState = new Map();
+  ptys.on('status', (s) => {
+    const prev = lastState.get(s.id);
+    lastState.set(s.id, s.state);
+    if (!s.taskId || !board.get(s.taskId)) return;
+    const stopped = (prev === State.RUNNING || prev === State.STARTING)
+      && (s.state === State.IDLE || s.state === State.NEEDS_INPUT);
+    if (!stopped) return;
+    const text = extractNextStep(ptys.screenText(s.id), s.profileId);
+    if (text) { board.setNextStep(s.taskId, text); runner.emit('changed'); }
+  });
+
   ipcMain.handle('board:get', () => boardSnapshot());
+  ipcMain.handle('board:wait', (_e, { id, waitingFor }) => {
+    const t = board.setWaiting(id, waitingFor);
+    runner.emit('changed');
+    return t;
+  });
+
+  ipcMain.handle('rules:list', (_e, cwd) => ({
+    rules: board.rulesFor(cwd),
+    version: board.rulesVersion(cwd),
+    running: ptys.list().filter((s) => !s.exited && (s.projectCwd || s.cwd) === cwd && s.profileId !== 'shell').length,
+  }));
+  ipcMain.handle('rules:add', (_e, { cwd, text }) => {
+    const r = board.addRule(cwd, text);
+    store.addProject(cwd);
+    return { rule: r, told: announceRules(cwd, `added "${r.text}"`) };
+  });
+  ipcMain.handle('rules:update', (_e, { cwd, id, text }) => {
+    const r = board.updateRule(cwd, id, text);
+    return { rule: r, told: announceRules(cwd, `changed a rule to "${r.text}"`) };
+  });
+  ipcMain.handle('rules:remove', (_e, { cwd, id }) => {
+    const gone = board.rulesFor(cwd).find((r) => r.id === id);
+    board.removeRule(cwd, id);
+    return { told: announceRules(cwd, `removed "${gone ? gone.text : id}"`) };
+  });
   ipcMain.handle('board:create', async (_e, o) => {
     const t = board.create(o || {});
     store.addProject(t.cwd);
@@ -474,17 +578,20 @@ function wireIpc() {
     // A task's restarted terminal is a fresh conversation, so it gets the
     // task's opening message again.
     const task = current && current.taskId ? board.get(current.taskId) : null;
-    const prompts = task ? [...prePrompts, openingPrompt(task)] : prePrompts;
+    const projectCwd = current ? (current.projectCwd || current.cwd) : null;
+    const rules = projectRules(projectCwd, profile);
+    const prompts = [...rules.prompts, ...prePrompts, ...(task ? [openingPrompt(task)] : [])];
     const info = ptys.restart(id, {
-      vars, args: buildArgs(profile, instructions, prompts, { id: jejakSessionId }),
+      vars, args: buildArgs(profile, [...rules.instructions, ...instructions], prompts, { id: jejakSessionId }),
       jejakSessionId,
       envSetIds: ids, envSetNames: names, envWarnings: warnings,
       instructionCount: instructions.length, prePromptCount: prompts.length,
     });
+    ptys.setRulesInfo(id, { count: rules.count, via: rules.via, version: rules.version });
     // A restart is a new conversation; a task resumes the new one from now on.
     if (task) board.setSessionId(task.id, jejakSessionId);
     if (current && current.taskId) runner.emit('changed');
-    return info;
+    return ptys.list().find((s) => s.id === id) || info;
   });
 
   // ---- general context (the global CLAUDE.md every session reads) ----

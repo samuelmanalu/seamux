@@ -41,7 +41,7 @@ class TaskRunner extends EventEmitter {
     // both squeeze into the last one.
     const startingTasks = [...this.starting].map((id) => this.board.get(id)).filter(Boolean);
     return {
-      project: live.filter((s) => s.cwd === cwd).length + startingTasks.filter((t) => t.cwd === cwd).length,
+      project: live.filter((s) => (s.projectCwd || s.cwd) === cwd).length + startingTasks.filter((t) => t.cwd === cwd).length,
       total: live.length + startingTasks.length,
     };
   }

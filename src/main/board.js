@@ -11,7 +11,7 @@ const crypto = require('crypto');
 // A task owns at most one terminal. Which terminal is live is runtime state
 // held by main.js; this file only stores what must survive a restart.
 
-const STATUSES = ['backlog', 'ready', 'queued', 'active', 'review', 'done'];
+const STATUSES = ['backlog', 'ready', 'queued', 'active', 'waiting', 'review', 'done'];
 const DEFAULT_PROJECT_LIMIT = 3;
 const DEFAULT_GLOBAL_LIMIT = 8;
 const EDITABLE = ['title', 'brief', 'agent'];
@@ -26,12 +26,13 @@ function clampLimit(n, fallback) {
 class Board {
   constructor(file) {
     this.file = file;
-    this.data = { version: 1, tasks: [], limits: {}, globalLimit: DEFAULT_GLOBAL_LIMIT };
+    this.data = { version: 1, tasks: [], limits: {}, globalLimit: DEFAULT_GLOBAL_LIMIT, rules: {} };
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
       this.data = { ...this.data, ...raw };
     } catch { /* first run */ }
     if (!Array.isArray(this.data.tasks)) this.data.tasks = [];
+    if (!this.data.rules || typeof this.data.rules !== 'object') this.data.rules = {};
   }
 
   save() {
@@ -107,6 +108,25 @@ class Board {
     return { ...t };
   }
 
+  /** Waiting on someone else: a review, a deploy watch, another team. */
+  setWaiting(id, waitingFor) {
+    const t = this._find(id);
+    t.waitingFor = String(waitingFor || '').trim() || null;
+    this.save();
+    return this.setStatus(id, 'waiting');
+  }
+
+  /** Where the work stands, taken from the agent's latest message. */
+  setNextStep(id, text) {
+    const t = this._find(id);
+    const v = String(text || '').trim() || null;
+    if (t.nextStep === v) return { ...t };
+    t.nextStep = v;
+    t.nextStepAt = now();
+    this.save();
+    return { ...t };
+  }
+
   setSessionId(id, sessionId) {
     const t = this._find(id);
     t.sessionId = sessionId || null;
@@ -125,6 +145,48 @@ class Board {
     this.data.tasks = this.data.tasks.filter((t) => t.cwd !== cwd);
     delete this.data.limits[cwd];
     this.save();
+  }
+
+  /* ------------------------------------------------------------- rules */
+
+  // Project rules: written once per project, given to every terminal in it.
+
+  rulesFor(cwd) { return (this.data.rules[cwd] || []).map((r) => ({ ...r })); }
+
+  addRule(cwd, text) {
+    const clean = String(text || '').trim();
+    if (!cwd) throw new Error('a rule needs a project');
+    if (!clean) throw new Error('a rule cannot be empty');
+    const list = this.data.rules[cwd] || (this.data.rules[cwd] = []);
+    if (list.some((r) => r.text === clean)) throw new Error('this project already has that rule');
+    const r = { id: `r_${crypto.randomBytes(4).toString('hex')}`, text: clean, createdAt: now(), updatedAt: now() };
+    list.push(r);
+    this.save();
+    return { ...r };
+  }
+
+  updateRule(cwd, id, text) {
+    const clean = String(text || '').trim();
+    if (!clean) throw new Error('a rule cannot be empty');
+    const r = (this.data.rules[cwd] || []).find((x) => x.id === id);
+    if (!r) throw new Error(`no such rule: ${id}`);
+    r.text = clean;
+    r.updatedAt = now();
+    this.save();
+    return { ...r };
+  }
+
+  removeRule(cwd, id) {
+    const before = (this.data.rules[cwd] || []).length;
+    this.data.rules[cwd] = (this.data.rules[cwd] || []).filter((x) => x.id !== id);
+    if (this.data.rules[cwd].length === before) throw new Error(`no such rule: ${id}`);
+    this.save();
+  }
+
+  /** Changes whenever a project's rules change, so a terminal can tell it has an old copy. */
+  rulesVersion(cwd) {
+    const text = this.rulesFor(cwd).map((r) => `${r.id}:${r.text}`).join('\n');
+    return crypto.createHash('sha1').update(text).digest('hex').slice(0, 12);
   }
 
   /* ------------------------------------------------------------ limits */
@@ -195,6 +257,15 @@ class Board {
   }
 }
 
+/** Project rules as standing instructions. Empty string when there are none. */
+function rulesText(rules, projectName) {
+  if (!rules || !rules.length) return '';
+  return [
+    `Project rules${projectName ? ` for ${projectName}` : ''}. Follow every one of them for the whole session:`,
+    ...rules.map((r, i) => `${i + 1}. ${r.text}`),
+  ].join('\n');
+}
+
 /** The opening message a task's agent receives on its first start. */
 function openingPrompt(task) {
   const parts = [`Task: ${task.title}`];
@@ -203,5 +274,5 @@ function openingPrompt(task) {
 }
 
 module.exports = {
-  Board, STATUSES, openingPrompt, DEFAULT_PROJECT_LIMIT, DEFAULT_GLOBAL_LIMIT,
+  Board, STATUSES, openingPrompt, rulesText, DEFAULT_PROJECT_LIMIT, DEFAULT_GLOBAL_LIMIT,
 };

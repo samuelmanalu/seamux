@@ -7,7 +7,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { Board, openingPrompt, DEFAULT_PROJECT_LIMIT, DEFAULT_GLOBAL_LIMIT } = require('../src/main/board');
+const { Board, openingPrompt, rulesText, DEFAULT_PROJECT_LIMIT, DEFAULT_GLOBAL_LIMIT } = require('../src/main/board');
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seamux-board-'));
 const file = path.join(dir, 'board.json');
@@ -130,6 +130,48 @@ ok('removeProject drops its tasks and limit', () => {
 ok('opening prompt carries the title and the brief', () => {
   assert.strictEqual(openingPrompt({ title: 'T', brief: '' }), 'Task: T');
   assert.strictEqual(openingPrompt({ title: 'T', brief: 'do it' }), 'Task: T\n\ndo it');
+});
+
+ok('project rules: add, refuse duplicates and empties, edit, remove', () => {
+  const b = new Board(file);
+  const v0 = b.rulesVersion('/p');
+  const r1 = b.addRule('/p', '  Never push to main  ');
+  assert.strictEqual(r1.text, 'Never push to main');
+  assert.throws(() => b.addRule('/p', 'Never push to main'), /already/);
+  assert.throws(() => b.addRule('/p', ' '), /empty/);
+  const v1 = b.rulesVersion('/p');
+  assert.notStrictEqual(v0, v1, 'version changes when rules change');
+  b.addRule('/p', 'Run the tests before committing');
+  b.updateRule('/p', r1.id, 'Never push to main directly');
+  assert.deepStrictEqual(b.rulesFor('/p').map((r) => r.text), ['Never push to main directly', 'Run the tests before committing']);
+  assert.deepStrictEqual(new Board(file).rulesFor('/p').length, 2, 'rules persist');
+  b.removeRule('/p', r1.id);
+  assert.strictEqual(b.rulesFor('/p').length, 1);
+  assert.throws(() => b.removeRule('/p', 'r_nope'), /no such rule/);
+  assert.deepStrictEqual(b.rulesFor('/other'), []);
+});
+
+ok('rules become numbered standing instructions', () => {
+  assert.strictEqual(rulesText([], 'x'), '');
+  assert.strictEqual(rulesText([{ text: 'A' }, { text: 'B' }], 'shop'),
+    'Project rules for shop. Follow every one of them for the whole session:\n1. A\n2. B');
+});
+
+ok('waiting records what the task waits for', () => {
+  const b = new Board(file);
+  const t = b.create({ cwd: '/p', title: 'W' });
+  const w = b.setWaiting(t.id, ' code review on 2 MRs ');
+  assert.deepStrictEqual([w.status, w.waitingFor], ['waiting', 'code review on 2 MRs']);
+});
+
+ok('next step is stored and stamped only when it changes', () => {
+  const b = new Board(file);
+  const t = b.create({ cwd: '/p', title: 'N' });
+  const a = b.setNextStep(t.id, 'Which keys should I drop?');
+  assert.strictEqual(a.nextStep, 'Which keys should I drop?');
+  const again = b.setNextStep(t.id, 'Which keys should I drop?');
+  assert.strictEqual(again.nextStepAt, a.nextStepAt);
+  assert.strictEqual(b.setNextStep(t.id, '').nextStep, null);
 });
 
 fs.rmSync(dir, { recursive: true, force: true });

@@ -15,15 +15,24 @@
   const barEl = document.querySelector('#board-bar');
   const toggleBtn = document.querySelector('#toggle-board');
 
+  // Running and Needs you are both a task with a live terminal ('active');
+  // which one a card sits in follows what its terminal is doing right now.
   const COLUMNS = [
     { id: 'backlog', label: 'Backlog', optional: true },
     { id: 'ready', label: 'Ready' },
     { id: 'queued', label: 'Queued' },
-    { id: 'active', label: 'In progress' },
+    { id: 'running', label: 'Running', status: 'active' },
+    { id: 'needs', label: 'Needs you', status: 'active' },
+    { id: 'waiting', label: 'Waiting on others' },
     { id: 'review', label: 'Review' },
     { id: 'done', label: 'Done', optional: true },
   ];
-  const MOVABLE = ['backlog', 'ready', 'active', 'review', 'done'];
+  // Where a card can be sent by hand, with the label the move dialog shows.
+  const MOVES = [
+    ['backlog', 'Backlog'], ['ready', 'Ready'], ['active', 'Running'],
+    ['waiting', 'Waiting on others'], ['review', 'Review'], ['done', 'Done'],
+  ];
+  const statusOfColumn = (colId) => (COLUMNS.find((c) => c.id === colId) || {}).status || colId;
 
   let snap = { projects: [], tasks: [], globalLimit: 8, liveTotal: 0 };
   let visible = false;
@@ -74,18 +83,27 @@
 
   function nextLine(task, ps) {
     if (task.status === 'queued') return ['Waiting', 'a free slot'];
+    if (task.status === 'waiting') return ['Waiting', `${task.waitingFor || 'someone else'} · ${age(task.statusAt)}`];
     if (ps) {
       if (ps.state === 'needs_input') return ['Asks', ps.reason || 'your input'];
-      if (ps.state === 'exited') return ['Ended', 'the terminal closed'];
-      if (ps.state === 'running') return ['Working', ps.reason || ''];
-      if (ps.state === 'idle') return ['Your move', 'the agent is at its prompt'];
+      if (ps.state === 'exited') return ['Ended', task.nextStep || 'the terminal closed'];
+      if (ps.state === 'running') return ['Working', task.nextStep || ps.reason || ''];
+      if (ps.state === 'idle') return ['Next', task.nextStep || 'the agent is at its prompt, your move'];
     }
+    if (task.nextStep && task.status !== 'done') return ['Last', task.nextStep];
     if (task.sessionId && (task.status === 'ready' || task.status === 'backlog')) return ['Resume', 'continues its conversation'];
     if (task.brief) return ['Brief', task.brief.split('\n')[0]];
     return null;
   }
 
   function columnsShown() { return COLUMNS.filter((c) => !c.optional || shown[c.id]); }
+
+  /** The column a task shows in. */
+  function columnOf(task) {
+    if (task.status !== 'active') return task.status;
+    const ps = paneState(task);
+    return ps && (ps.state === 'running' || ps.state === 'starting') ? 'running' : 'needs';
+  }
 
   /* ------------------------------------------------------------- render */
 
@@ -99,7 +117,7 @@
 
     lanesEl.append(h('div', { class: 'b-corner' }));
     for (const c of cols) {
-      const count = snap.tasks.filter((t) => t.status === c.id).length;
+      const count = snap.tasks.filter((t) => columnOf(t) === c.id).length;
       lanesEl.append(h('div', { class: 'b-colhead' }, h('span', { text: c.label }), h('span', { class: 'b-count', text: String(count) })));
     }
 
@@ -124,20 +142,28 @@
           onclick: () => editLimit(p),
         }),
         h('div', { class: 'b-lanesub', text: `backlog ${backlog} · done ${done}` }),
-        h('button', { class: 'mini', text: '+ Task', onclick: () => taskDialog({ cwd: p.cwd }) })));
+        h('div', { class: 'b-lanebtns' },
+          h('button', { class: 'mini', text: '+ Task', onclick: () => taskDialog({ cwd: p.cwd }) }),
+          h('button', {
+            class: 'mini' + (p.ruleCount ? ' on' : ''),
+            text: p.ruleCount ? `Rules ${p.ruleCount}` : 'Rules',
+            title: 'Rules every terminal in this project follows',
+            onclick: () => rulesDialog(p.cwd),
+          }))));
 
       for (const c of cols) {
         const cell = h('div', { class: 'b-cell', 'data-cwd': p.cwd, 'data-status': c.id });
+        const target = statusOfColumn(c.id);
         cell.ondragover = (e) => {
-          if (dragging && dragging.cwd === p.cwd && MOVABLE.includes(c.id)) { e.preventDefault(); cell.classList.add('drop'); }
+          if (dragging && dragging.cwd === p.cwd && target !== 'queued') { e.preventDefault(); cell.classList.add('drop'); }
         };
         cell.ondragleave = () => cell.classList.remove('drop');
         cell.ondrop = (e) => {
           e.preventDefault();
           cell.classList.remove('drop');
-          if (dragging && dragging.cwd === p.cwd && dragging.status !== c.id) move(dragging.id, c.id);
+          if (dragging && dragging.cwd === p.cwd && dragging.status !== target) move(dragging.id, target);
         };
-        for (const t of tasks.filter((x) => x.status === c.id)) cell.append(card(t));
+        for (const t of tasks.filter((x) => columnOf(x) === c.id)) cell.append(card(t));
         lanesEl.append(cell);
       }
     }
@@ -173,7 +199,7 @@
   function card(t) {
     const ps = paneState(t);
     const line = nextLine(t, ps);
-    const dot = ps ? ps.state : (t.status === 'queued' ? 'queued' : 'none');
+    const dot = ps ? ps.state : (t.status === 'queued' || t.status === 'waiting' ? 'queued' : 'none');
     const el = h('div', {
       class: 'b-card' + (ps && ps.state === 'needs_input' ? ' needs' : ''),
       draggable: 'true',
@@ -221,6 +247,7 @@
   }
 
   function setVisible(on) {
+    if (!on && peekId) closePeek();
     visible = on;
     root.hidden = !on;
     toggleBtn.classList.toggle('on', on);
@@ -260,6 +287,7 @@
   }
 
   async function move(id, status) {
+    if (status === 'waiting') { waitDialog(snap.tasks.find((t) => t.id === id)); return; }
     try {
       const r = await H.boardMove(id, status);
       if (r && r.pane && !panes.has(r.pane.id)) addPane(r.pane);
@@ -388,15 +416,172 @@
       snap.globalLimit, (v) => H.boardSetGlobalLimit(v));
   }
 
+  function waitDialog(t) {
+    if (!t) return;
+    const input = h('input', { class: 'field', id: 'wait-input', value: t.waitingFor || '', placeholder: 'e.g. code review on 2 MRs, the 1-hour deploy watch, an answer from finance' });
+    const save = async () => { await H.boardWait(t.id, input.value); m.close(); };
+    input.onkeydown = (e) => { if (e.key === 'Enter') save(); };
+    const m = UI().openModal({
+      title: 'What is it waiting for?',
+      subtitle: 'The card shows this and how long it has waited. Its terminal keeps running.',
+      body: input,
+      footer: h('div', { class: 'modal-actions' },
+        h('button', { class: 'btn', text: 'Cancel', onclick: () => m.close() }),
+        h('button', { class: 'btn primary', text: 'Move to Waiting', onclick: save })),
+    });
+    requestAnimationFrame(() => input.focus());
+  }
+
   function moveDialog(t) {
     const m = UI().openModal({
       title: `Move “${t.title}”`,
-      body: h('div', { class: 'b-movelist' }, ...MOVABLE.map((s) => {
-        const label = COLUMNS.find((c) => c.id === s).label;
-        return h('button', { class: 'btn' + (s === t.status ? ' disabled' : ''), text: label, onclick: () => { m.close(); move(t.id, s); } });
-      })),
+      body: h('div', { class: 'b-movelist' }, ...MOVES.map(([s, label]) =>
+        h('button', { class: 'btn' + (s === t.status ? ' disabled' : ''), text: label, onclick: () => { m.close(); move(t.id, s); } }))),
       footer: h('div', { class: 'modal-actions' }, h('button', { class: 'btn', text: 'Cancel', onclick: () => m.close() })),
     });
+  }
+
+  /* -------------------------------------------------------------- rules */
+
+  function projectOf(cwd) { return snap.projects.find((p) => p.cwd === cwd) || { cwd, name: cwd.split('/').pop() }; }
+
+  /** List, add, edit and remove a project's rules. */
+  async function rulesDialog(cwd, prefill = '') {
+    if (!cwd) { flash('Open a terminal or pick a project first.'); return; }
+    const name = projectOf(cwd).name;
+    const list = h('div', { class: 'r-list' });
+    const note = h('p', { class: 'dim small r-note' });
+    const err = h('p', { class: 'b-err', hidden: true });
+    const add = h('textarea', { class: 'field', id: 'rule-new', rows: '3', placeholder: 'A rule every terminal in this project must follow' });
+    add.value = prefill;
+    const fail = (e) => { err.textContent = e.message || String(e); err.hidden = false; };
+    const told = (n) => flash(n ? `Saved. ${n} running terminal${n === 1 ? '' : 's'} will be told at their next prompt.` : 'Saved. New terminals get it at launch.');
+
+    async function load() {
+      const { rules, running } = await H.rulesList(cwd);
+      note.textContent = `Every new terminal in ${name} gets these at launch. ${running} running terminal${running === 1 ? '' : 's'} will be told about changes at their next prompt.`;
+      list.replaceChildren(...(rules.length ? rules.map((r, i) => {
+        const text = h('div', { class: 'r-text', text: `${i + 1}. ${r.text}` });
+        const row = h('div', { class: 'r-row' }, text,
+          h('button', { class: 'mini', text: 'Edit', onclick: () => {
+            const input = h('input', { class: 'field', value: r.text });
+            const saveEdit = async () => { try { told((await H.rulesUpdate(cwd, r.id, input.value)).told); await load(); } catch (e) { fail(e); } };
+            input.onkeydown = (e) => { if (e.key === 'Enter') saveEdit(); };
+            row.replaceChildren(input, h('button', { class: 'mini', text: 'Save', onclick: saveEdit }));
+            input.focus();
+          } }),
+          h('button', { class: 'mini danger', text: 'Remove', onclick: async () => { try { told((await H.rulesRemove(cwd, r.id)).told); await load(); } catch (e) { fail(e); } } }));
+        return row;
+      }) : [h('p', { class: 'dim small', text: 'No rules yet.' })]));
+    }
+
+    const m = UI().openModal({
+      title: `Rules for ${name}`,
+      subtitle: 'Written once here, followed by every terminal in the project. Claude receives them in its system prompt, so they survive long sessions.',
+      body: h('div', { class: 'r-body' }, list, note, h('label', { class: 'dim small', text: 'Add a rule' }), add, err),
+      footer: h('div', { class: 'modal-actions' },
+        h('button', { class: 'btn', text: 'Close', onclick: () => m.close() }),
+        h('button', { class: 'btn primary', text: 'Add rule', onclick: async () => {
+          try { const r = await H.rulesAdd(cwd, add.value); add.value = ''; err.hidden = true; told(r.told); await load(); } catch (e) { fail(e); }
+        } })),
+      wide: true,
+    });
+    await load();
+    requestAnimationFrame(() => add.focus());
+  }
+
+  /** Selected text in the terminal on screen becomes a project rule. */
+  function promoteRule() {
+    const id = currentId();
+    const pane = id && panes.get(id);
+    const selection = pane ? pane.term.getSelection().trim() : '';
+    const cwd = pane ? (pane.meta.projectCwd || pane.meta.cwd) : (snap.tasks.find((t) => t.id === selectedId) || {}).cwd;
+    if (!cwd) { flash('Open a terminal first, then select the text of the rule.'); return; }
+    rulesDialog(cwd, selection);
+  }
+
+  /** The topbar chip: which rules the terminal on screen received. */
+  function updateChip(meta) {
+    const chip = document.querySelector('#session-rules');
+    if (!chip) return;
+    if (!meta) { chip.hidden = true; return; }
+    chip.hidden = false;
+    const cwd = meta.projectCwd || meta.cwd;
+    const project = snap.projects.find((p) => p.cwd === cwd);
+    const current = project ? project.rulesVersion : meta.rulesVersion;
+    const total = project ? project.ruleCount : meta.projectRuleCount;
+    chip.className = '';
+    chip.onclick = () => rulesDialog(cwd);
+    if (!total) {
+      chip.textContent = 'No rules';
+      chip.title = 'This project has no rules. Click to add some.';
+      chip.className = 'none';
+    } else if (meta.rulesVia === 'none') {
+      chip.textContent = 'Rules not delivered';
+      chip.title = meta.profileId === 'shell'
+        ? 'A plain shell takes no instructions.'
+        : 'This agent has no way to take standing instructions, and a resumed conversation gets no opening message. Restart the terminal to deliver them.';
+      chip.className = 'warn';
+    } else if (current && meta.rulesVersion !== current) {
+      chip.textContent = 'Rules out of date';
+      chip.title = 'The project’s rules changed after this terminal started and it could not be told. Restart it to apply them.';
+      chip.className = 'warn';
+    } else {
+      chip.textContent = `Rules ${meta.projectRuleCount} ✓`;
+      chip.title = { system: 'In the system prompt', opening: 'In the opening message', notice: 'Typed in as a notice after a change' }[meta.rulesVia] || '';
+      chip.className = 'ok';
+    }
+  }
+
+  /* --------------------------------------------------------------- peek */
+
+  let peekTimer = null;
+  let peekId = null;
+
+  /** Look at a task's terminal without leaving the board, and answer quick prompts. */
+  function peek(taskId) {
+    const t = snap.tasks.find((x) => x.id === taskId);
+    const el = document.querySelector('#board-peek');
+    if (!t || !t.pane || t.pane.exited || !panes.has(t.pane.id)) { flash('This task has no running terminal to look at.'); return; }
+    peekId = t.pane.id;
+    const screen = h('pre', { class: 'p-screen' });
+    const reply = h('input', { class: 'field', id: 'peek-reply', placeholder: 'Type a reply and press Enter' });
+    const send = (data) => { H.write(peekId, data); refreshPeek(); };
+    reply.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); send(`${reply.value}\r`); reply.value = ''; }
+      if (e.key === 'Escape') { e.preventDefault(); closePeek(); }
+    };
+    el.replaceChildren(
+      h('div', { class: 'p-head' },
+        h('strong', { text: t.title }),
+        h('span', { class: 'spacer' }),
+        h('button', { class: 'mini', text: 'Open terminal', onclick: () => { closePeek(); open(t.id); } }),
+        h('button', { class: 'mini', text: '×', title: 'Close (Esc)', onclick: closePeek })),
+      screen,
+      h('div', { class: 'p-keys' },
+        ...['1', '2', '3'].map((k) => h('button', { class: 'mini', text: k, title: `Press ${k}`, onclick: () => send(k) })),
+        h('button', { class: 'mini', text: 'Enter', onclick: () => send('\r') }),
+        h('button', { class: 'mini', text: 'Esc', title: 'Send Esc to the agent', onclick: () => send('\x1b') })),
+      reply);
+    el.hidden = false;
+    async function refreshPeek() {
+      if (!peekId) return;
+      const text = await H.screenText(peekId);
+      screen.textContent = text.replace(/\s+$/, '').split('\n').slice(-28).join('\n');
+    }
+    clearInterval(peekTimer);
+    refreshPeek();
+    peekTimer = setInterval(refreshPeek, 700);
+    requestAnimationFrame(() => reply.focus());
+  }
+
+  function closePeek() {
+    clearInterval(peekTimer);
+    peekId = null;
+    const el = document.querySelector('#board-peek');
+    el.hidden = true;
+    el.replaceChildren();
+    root.focus();
   }
 
   /* ------------------------------------------------------------ keyboard */
@@ -428,6 +613,7 @@
       ArrowLeft: () => step(-1, 0), h: () => step(-1, 0),
       ArrowRight: () => step(1, 0), l: () => step(1, 0),
       Enter: () => t && open(t.id),
+      ' ': () => t && peek(t.id),
       s: () => t && start(t.id),
       m: () => t && moveDialog(t),
       e: () => t && taskDialog(t),
@@ -443,6 +629,8 @@
     const grew = s.projects.length !== snap.projects.length;
     snap = s;
     if (visible) render();
+    const id = currentId();
+    if (id && panes.has(id)) updateChip(panes.get(id).meta);
     // A task can add a project; keep the sidebar's project list in step.
     if (grew && typeof window.refreshProjects === 'function') window.refreshProjects();
   });
@@ -458,12 +646,19 @@
   H.onToggleBoard(toggle);
   H.onNewTask(() => { if (!visible) setVisible(true); taskDialog({}); });
   H.onNextNeeds(nextNeeds);
+  H.onPromoteRule(promoteRule);
+  H.onProjectRules(() => {
+    const id = currentId();
+    const pane = id && panes.get(id);
+    const t = snap.tasks.find((x) => x.id === selectedId);
+    rulesDialog(pane && !visible ? (pane.meta.projectCwd || pane.meta.cwd) : (t ? t.cwd : (snap.projects[0] || {}).cwd));
+  });
   toggleBtn.onclick = toggle;
 
   // Ages on cards drift; refresh them once a minute while the board is open.
   setInterval(() => { if (visible) render(); }, 60000);
 
-  window.__board = { toggle, show: () => setVisible(true), hide: () => setVisible(false), refresh, get visible() { return visible; }, select, start, move, nextNeeds };
+  window.__board = { updateChip, rulesDialog, peek, closePeek, columnOf: (id) => { const t = snap.tasks.find((x) => x.id === id); return t ? columnOf(t) : null; }, toggle, show: () => setVisible(true), hide: () => setVisible(false), refresh, get visible() { return visible; }, select, start, move, nextNeeds };
 
   // Open on the board when there is work on it.
   H.boardGet().then((s) => { snap = s; if (s.tasks.length) setVisible(true); });
