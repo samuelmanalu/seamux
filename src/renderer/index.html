@@ -43,6 +43,7 @@
         </div>
         <div id="crumb-right">
           <button id="toggle-board" title="Board (⌘B)">Board</button>
+          <button id="session-task" title="Task details (⌘I)" hidden>Task</button>
           <button id="session-rules" hidden>Rules</button>
           <button id="session-context" title="Context for this session">Context</button>
           <button id="session-artifacts" title="Artifacts from this session (⌘⇧A)" hidden>Artifacts</button>
@@ -58,6 +59,7 @@
       </div>
 
       <div id="terminals"></div>
+      <aside id="taskdrawer" hidden></aside>
 
       <div id="empty">
         <svg id="brand" viewBox="0 0 1024 1024" width="72" height="72" aria-hidden="true">
@@ -83,7 +85,7 @@
         <aside id="board-peek" hidden></aside>
         <p id="board-hint" class="dim small">
           <kbd>⌘B</kbd> board &nbsp;·&nbsp; <kbd>⌘N</kbd> new task &nbsp;·&nbsp; <kbd>⌘J</kbd> next that needs you &nbsp;·&nbsp;
-          arrows or <kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> move &nbsp;·&nbsp; <kbd>Enter</kbd> open &nbsp;·&nbsp; <kbd>Space</kbd> peek &nbsp;·&nbsp; <kbd>S</kbd> start &nbsp;·&nbsp; <kbd>M</kbd> move to &nbsp;·&nbsp; <kbd>E</kbd> edit
+          arrows or <kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> move &nbsp;·&nbsp; <kbd>Enter</kbd> open &nbsp;·&nbsp; <kbd>Space</kbd> peek &nbsp;·&nbsp; <kbd>S</kbd> start &nbsp;·&nbsp; <kbd>D</kbd> diff &nbsp;·&nbsp; <kbd>M</kbd> move to &nbsp;·&nbsp; <kbd>E</kbd> edit
         </p>
       </section>
 

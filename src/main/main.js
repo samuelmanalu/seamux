@@ -14,6 +14,7 @@ const profiles = require('./profiles');
 const { KnowledgeClient, EXAMPLES: KNOWLEDGE_EXAMPLES } = require('./knowledge');
 const { Board, openingPrompt, rulesText } = require('./board');
 const { extractNextStep } = require('./next-step');
+const worktrees = require('./worktree');
 const { TaskRunner } = require('./task-runner');
 
 // Tests must never write into the real user's config. Set before anything
@@ -292,6 +293,11 @@ function buildMenu() {
           click: () => send('ui:projectRules'),
         },
         {
+          label: 'Task Details',
+          accelerator: 'CmdOrCtrl+I',
+          click: () => send('ui:taskDrawer'),
+        },
+        {
           label: 'Next Task That Needs You',
           accelerator: 'CmdOrCtrl+J',
           click: () => send('ui:nextNeeds'),
@@ -518,14 +524,60 @@ function announceRules(cwd, change) {
   return told;
 }
 
+/**
+ * Where a task's terminal runs. Decided once, at its first start, and kept
+ * after that: its conversation (claude --resume looks in the folder it began
+ * in) and its changes live there.
+ *   worktree  its own git worktree; refused if the project is not in git
+ *   main      the project's own folder
+ *   auto      a worktree when the project allows more than one terminal at
+ *             once and is in git; otherwise the project's folder
+ */
+async function taskRunCwd(task) {
+  const fs = require('fs');
+  if (task.worktree && fs.existsSync(task.worktree.path)) return task.worktree.runCwd;
+  if (task.worktree) {
+    // Removed earlier: check its kept branch out again, at the same path, so
+    // a resumed conversation finds its folder.
+    const w = await worktrees.create({
+      projectCwd: task.cwd, task, baseDir: path.join(app.getPath('userData'), 'worktrees'),
+      name: path.basename(task.worktree.path),
+    });
+    board.setWorktree(task.id, { ...w, base: task.worktree.base });
+    return w.runCwd;
+  }
+  if (task.sessionId && !task.worktree) return task.cwd;   // began in the project folder
+  let want = task.isolation === 'worktree';
+  if (task.isolation === 'auto') want = board.limitFor(task.cwd) > 1 && !!(await worktrees.repoRoot(task.cwd));
+  if (!want) return task.cwd;
+  const w = await worktrees.create({ projectCwd: task.cwd, task, baseDir: path.join(app.getPath('userData'), 'worktrees') });
+  board.setWorktree(task.id, w);
+  return w.runCwd;
+}
+
+/** Refresh a task's +/- line counts from its worktree. Quiet on failure. */
+async function refreshDiffStat(taskId) {
+  const t = board.get(taskId);
+  if (!t || !t.worktree || !require('fs').existsSync(t.worktree.path)) return null;
+  try {
+    const st = await worktrees.stat(t.worktree.path, t.worktree.base);
+    board.setDiffStat(taskId, st);
+    runner.emit('changed');
+    return st;
+  } catch { return null; }
+}
+
 /** Spawn the one terminal a board task owns. Used by the TaskRunner. */
 async function spawnTask(task) {
+  const runCwd = await taskRunCwd(task);
+  task = board.get(task.id);
   const profile = profileFor(task.cwd, task.agent);
   // Only the real claude binary can resume; anything else starts fresh.
   const canResume = profile.id === 'claude' && profiles.commandFor(profile) === 'claude';
   const resume = canResume && task.sessionId ? task.sessionId : null;
   const meta = await createSession({
     cwd: task.cwd,
+    runCwd,
     title: task.title,
     profileId: profile.id,
     taskId: task.id,
@@ -590,6 +642,29 @@ function wireBoard() {
     if (!stopped) return;
     const text = extractNextStep(ptys.screenText(s.id), s.profileId);
     if (text) { board.setNextStep(s.taskId, text); runner.emit('changed'); }
+    refreshDiffStat(s.taskId);
+  });
+
+  ipcMain.handle('board:diff', async (_e, id) => {
+    const t = board.get(id);
+    if (!t || !t.worktree) return { ok: false, error: 'this task runs in the project’s own folder, so it has no diff of its own' };
+    if (!require('fs').existsSync(t.worktree.path)) return { ok: false, error: 'this task’s worktree was removed' };
+    try {
+      const d = await worktrees.diff(t.worktree.path, t.worktree.base);
+      const stat = await refreshDiffStat(id);
+      return { ok: true, ...d, stat, branch: t.worktree.branch, base: t.worktree.base, path: t.worktree.path };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('board:removeWorktree', async (_e, id) => {
+    const t = board.get(id);
+    if (!t || !t.worktree) throw new Error('this task has no worktree');
+    const pane = runner.paneOf(id);
+    if (pane && !pane.exited) throw new Error('close the task’s terminal first');
+    const r = await worktrees.remove(t.worktree);
+    // Keep the record: the branch still holds the work.
+    board.setWorktree(id, { ...t.worktree, removed: true });
+    runner.emit('changed');
+    return r;
   });
 
   ipcMain.handle('board:get', () => boardSnapshot());

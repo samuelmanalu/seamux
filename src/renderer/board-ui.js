@@ -210,6 +210,8 @@
       h('div', { class: 'b-row' },
         h('span', { class: `dot ${dot}` }),
         h('span', { class: 'b-agent', text: agentLabel(t) }),
+        t.diffStat && t.diffStat.files ? h('span', { class: 'b-stat', title: `${t.diffStat.files} file${t.diffStat.files === 1 ? '' : 's'} changed` },
+          h('span', { class: 'add', text: `+${t.diffStat.added}` }), document.createTextNode(' '), h('span', { class: 'del', text: `−${t.diffStat.removed}` })) : null,
         h('span', { class: 'b-age', text: age(t.statusAt) })),
       line ? h('div', { class: 'b-next' }, h('b', { text: `${line[0]}: ` }), document.createTextNode(line[1])) : null,
       actions(t, ps));
@@ -233,6 +235,9 @@
         title: resume ? 'Start its terminal and continue the same conversation' : 'Start a terminal for this task (S)',
         onclick: (e) => { e.stopPropagation(); start(t.id); },
       }));
+    }
+    if (t.worktree && !t.worktree.removed) {
+      row.append(h('button', { class: 'mini', text: 'Diff', title: 'What this task changed (D)', onclick: (e) => { e.stopPropagation(); diffDialog(t.id); } }));
     }
     row.append(h('button', { class: 'mini', text: 'Edit', onclick: (e) => { e.stopPropagation(); taskDialog(t); } }));
     return row;
@@ -346,16 +351,32 @@
       h('option', { value: '', text: defaultAgent(projects.find((p) => p.cwd === cwd0)) }),
       ...profiles.map((p) => { const o = h('option', { value: p.id, text: p.label }); if (p.id === task.agent) o.selected = true; return o; }));
     const err = h('p', { class: 'b-err', hidden: true });
+    const isolation = h('select', { class: 'field', id: 'task-isolation' },
+      ...[['auto', 'Automatic: own worktree when the project runs more than one terminal'],
+        ['worktree', 'Its own git worktree and branch'],
+        ['main', 'The project’s own folder']].map(([v, l]) => { const o = h('option', { value: v, text: l }); if ((task.isolation || 'auto') === v) o.selected = true; return o; }));
+    const fixed = !!(task.sessionId || task.worktree);
+    if (fixed) isolation.disabled = true;
+    const links = h('textarea', { class: 'field', id: 'task-links', rows: '2', placeholder: 'MRs, tickets, docs: one link per line' });
+    links.value = (task.links || []).join('\n');
+    const where = task.worktree
+      ? h('div', { class: 'b-where' },
+        h('span', { class: 'mono', text: task.worktree.branch }),
+        task.worktree.removed ? h('span', { class: 'dim small', text: ' · worktree removed, branch kept' }) : null)
+      : null;
 
     const body = h('div', { class: 'b-form' },
       h('label', { text: 'Project' }), project,
       h('label', { text: 'Title' }), title,
       h('label', { text: 'Brief' }), brief,
       h('label', { text: 'Agent' }), agent,
+      h('label', { text: 'Runs in' }), h('div', { class: 'b-stack' }, isolation,
+        fixed ? h('span', { class: 'dim small', text: 'Fixed once a task has started: its conversation and changes live there.' }) : null, where),
+      h('label', { text: 'Links' }), links,
       err);
 
     project.onchange = () => { agent.options[0].textContent = defaultAgent(projects.find((p) => p.cwd === project.value)); };
-    const read = () => ({ cwd: project.value, title: title.value, brief: brief.value, agent: agent.value || null });
+    const read = () => ({ cwd: project.value, title: title.value, brief: brief.value, agent: agent.value || null, links: links.value, ...(fixed ? {} : { isolation: isolation.value }) });
     const fail = (e) => { err.textContent = e.message || String(e); err.hidden = false; };
 
     const buttons = [h('button', { class: 'btn', text: 'Cancel', onclick: () => m.close() })];
@@ -377,8 +398,15 @@
           if (!(await UI().confirmDialog('Delete this task?', `“${task.title}” will be removed from the board.`))) return;
           try { await H.boardRemove(task.id); } catch (e) { flash(e.message || String(e)); }
         } }),
+        task.worktree && !task.worktree.removed ? h('button', { class: 'btn', text: 'Remove worktree', title: 'Delete the worktree folder. Its branch, with every commit, is kept.', onclick: async () => {
+          try { await H.boardRemoveWorktree(task.id); m.close(); flash(`Worktree removed. Branch ${task.worktree.branch} is kept.`); } catch (e) { fail(e); }
+        } }) : null,
         h('button', { class: 'btn primary', text: 'Save', onclick: async () => {
-          try { const r = read(); await H.boardUpdate(task.id, { title: r.title, brief: r.brief, agent: r.agent }); m.close(); } catch (e) { fail(e); }
+          try {
+            const r = read();
+            await H.boardUpdate(task.id, { title: r.title, brief: r.brief, agent: r.agent, links: r.links, ...(r.isolation ? { isolation: r.isolation } : {}) });
+            m.close();
+          } catch (e) { fail(e); }
         } }));
     }
 
@@ -520,7 +548,8 @@
   function updateChip(meta) {
     const chip = document.querySelector('#session-rules');
     if (!chip) return;
-    if (!meta) { chip.hidden = true; return; }
+    if (!meta) { chip.hidden = true; renderDrawer(); return; }
+    queueMicrotask(renderDrawer);
     chip.hidden = false;
     const cwd = meta.projectCwd || meta.cwd;
     const project = snap.projects.find((p) => p.cwd === cwd);
@@ -600,6 +629,99 @@
     root.focus();
   }
 
+  /* --------------------------------------------------------------- diff */
+
+  /** What a task changed since it started: committed, uncommitted and new files. */
+  async function diffDialog(taskId) {
+    const t = snap.tasks.find((x) => x.id === taskId);
+    if (!t) return;
+    const r = await H.boardDiff(taskId);
+    if (!r.ok) { flash(r.error); return; }
+    const files = [];
+    const pre = h('div', { class: 'd-text' });
+    const lines = r.text.split('\n');
+    const LIMIT = 20000;
+    for (const line of lines.slice(0, LIMIT)) {
+      let cls = '';
+      if (line.startsWith('diff --git')) {
+        const name = line.replace(/^diff --git a\/(.+?) b\/.*$/, '$1');
+        const anchor = h('div', { class: 'd-line file', text: name });
+        files.push([name, anchor]);
+        pre.append(anchor);
+        continue;
+      }
+      if (/^(index |--- |\+\+\+ |new file|deleted file|similarity|rename )/.test(line)) cls = 'meta';
+      else if (line.startsWith('@@')) cls = 'hunk';
+      else if (line.startsWith('+')) cls = 'add';
+      else if (line.startsWith('-')) cls = 'del';
+      pre.append(h('div', { class: `d-line ${cls}`, text: line || ' ' }));
+    }
+    const st = r.stat || {};
+    const m = UI().openModal({
+      title: t.title,
+      subtitle: `${r.branch} · since ${String(r.base).slice(0, 8)} · ${st.files || 0} file${st.files === 1 ? '' : 's'}, +${st.added || 0} −${st.removed || 0}${r.truncated || lines.length > LIMIT ? ' · shortened' : ''}`,
+      body: h('div', { class: 'd-body' },
+        h('div', { class: 'd-files' }, ...(files.length ? files.map(([name, anchor]) => h('button', { class: 'd-file', text: name, title: name, onclick: () => anchor.scrollIntoView({ block: 'start' }) }))
+          : [h('p', { class: 'dim small', text: 'No changes yet.' })])),
+        pre),
+      footer: h('div', { class: 'modal-actions' },
+        h('span', { class: 'dim small d-path', text: r.path }),
+        h('button', { class: 'btn primary', text: 'Close', onclick: () => m.close() })),
+      wide: true,
+    });
+    m.card.classList.add('diffview');   // not .diff: the General tab uses that
+  }
+
+  /* ---------------------------------------------------------- task panel */
+
+  // Beside the terminal in the focus view: everything about the task whose
+  // terminal is on screen.
+  let drawerOpen = false;
+  const drawerEl = document.querySelector('#taskdrawer');
+  const taskBtn = document.querySelector('#session-task');
+
+  function currentTask() {
+    const id = currentId();
+    const pane = id && panes.get(id);
+    return pane && pane.meta.taskId ? snap.tasks.find((t) => t.id === pane.meta.taskId) || null : null;
+  }
+
+  function renderDrawer() {
+    const t = currentTask();
+    taskBtn.hidden = !t;
+    const show = drawerOpen && !!t;
+    drawerEl.hidden = !show;
+    document.querySelector('#main').classList.toggle('drawer-open', show);
+    if (!show) return;
+    const ps = paneState(t);
+    const line = nextLine(t, ps);
+    const sec = (label, ...kids) => h('div', { class: 'td-sec' }, h('div', { class: 'td-label', text: label }), ...kids);
+    const col = COLUMNS.find((c) => c.id === columnOf(t));
+    drawerEl.replaceChildren(
+      h('div', { class: 'td-head' }, h('strong', { text: t.title }), h('button', { class: 'mini', text: '×', title: 'Close (⌘I)', onclick: toggleDrawer })),
+      sec('Status', h('div', { text: `${col ? col.label : t.status} · ${projectOf(t.cwd).name}` })),
+      t.brief ? sec('Brief', h('div', { class: 'td-text', text: t.brief })) : null,
+      line ? sec(line[0], h('div', { class: 'td-text', text: line[1] })) : null,
+      t.worktree ? sec('Git',
+        h('div', { class: 'mono td-text', text: t.worktree.branch }),
+        t.diffStat ? h('div', { class: 'b-stat' }, h('span', { class: 'add', text: `+${t.diffStat.added}` }), document.createTextNode(' '), h('span', { class: 'del', text: `−${t.diffStat.removed}` }), document.createTextNode(` in ${t.diffStat.files} file${t.diffStat.files === 1 ? '' : 's'}`)) : null,
+        t.worktree.removed ? null : h('button', { class: 'mini', text: 'View diff', onclick: () => diffDialog(t.id) }))
+        : sec('Git', h('div', { class: 'dim small', text: 'Runs in the project’s own folder.' })),
+      t.links && t.links.length ? sec('Links', ...t.links.map((u) => h('a', { class: 'td-link', href: u, target: '_blank', rel: 'noopener', text: u }))) : null,
+      sec('Rules', h('div', { class: 'td-text', text: document.querySelector('#session-rules').textContent || '' })),
+      h('div', { class: 'td-actions' },
+        h('button', { class: 'mini', text: 'Move…', onclick: () => moveDialog(t) }),
+        h('button', { class: 'mini', text: 'Edit', onclick: () => taskDialog(t) }),
+        h('button', { class: 'mini', text: 'Board', onclick: () => setVisible(true) })));
+  }
+
+  function toggleDrawer() {
+    drawerOpen = !drawerOpen;
+    renderDrawer();
+    const id = currentId();
+    if (id && panes.has(id)) requestAnimationFrame(() => panes.get(id).fit.fit());
+  }
+
   /* ------------------------------------------------------------ keyboard */
 
   function grid() {
@@ -631,6 +753,7 @@
       Enter: () => t && open(t.id),
       ' ': () => t && peek(t.id),
       s: () => t && start(t.id),
+      d: () => t && t.worktree && diffDialog(t.id),
       m: () => t && moveDialog(t),
       e: () => t && taskDialog(t),
       n: () => taskDialog(t ? { cwd: t.cwd } : {}),
@@ -663,6 +786,8 @@
   H.onNewTask(() => { if (!visible) setVisible(true); taskDialog({}); });
   H.onNextNeeds(nextNeeds);
   H.onPromoteRule(promoteRule);
+  H.onTaskDrawer(toggleDrawer);
+  taskBtn.onclick = toggleDrawer;
   H.onProjectRules(() => {
     const id = currentId();
     const pane = id && panes.get(id);
@@ -674,7 +799,7 @@
   // Ages on cards drift; refresh them once a minute while the board is open.
   setInterval(() => { if (visible) render(); }, 60000);
 
-  window.__board = { updateChip, rulesDialog, peek, closePeek, columnOf: (id) => { const t = snap.tasks.find((x) => x.id === id); return t ? columnOf(t) : null; }, toggle, show: () => setVisible(true), hide: () => setVisible(false), refresh, get visible() { return visible; }, select, start, move, nextNeeds };
+  window.__board = { updateChip, diffDialog, toggleDrawer, get drawerOpen() { return drawerOpen; }, rulesDialog, peek, closePeek, columnOf: (id) => { const t = snap.tasks.find((x) => x.id === id); return t ? columnOf(t) : null; }, toggle, show: () => setVisible(true), hide: () => setVisible(false), refresh, get visible() { return visible; }, select, start, move, nextNeeds };
 
   // Open on the board when there is work on it.
   H.boardGet().then((s) => { snap = s; if (s.tasks.length) setVisible(true); });

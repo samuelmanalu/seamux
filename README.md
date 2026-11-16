@@ -118,6 +118,28 @@ see what every terminal is for and what comes next.
   start, **E** edit, **N** new task, **⌘J** jump to the next terminal that needs
   you. Backlog and Done are hidden until you turn them on.
 
+### Worktrees and review
+
+When a project allows more than one terminal at once and is in git, each task
+gets its **own git worktree and branch** (`seamux/<title>-<id>`) at its first
+start, so agents working in parallel never edit the same files. The worktree
+lives in Seamux's data folder, never inside your repository, and the main
+checkout is left alone. A task can also be set to always use its own worktree
+or always the project's folder; where it runs is fixed once it has started,
+because its conversation and its changes live there.
+
+- Cards show **+/- line counts** since the task started, refreshed whenever the
+  agent stops. **Diff** (or **D**) shows every change: commits, uncommitted
+  edits and new files.
+- **⌘I** opens the task panel beside its terminal: brief, next step, branch,
+  changes, links (MRs, tickets) and the rules the terminal received.
+- **Remove worktree** (in a task's Edit dialog) deletes the folder but keeps the
+  branch with every commit. It is refused while the task's terminal runs or
+  while anything is uncommitted. Starting the task again checks the branch out
+  at the same folder, so its conversation resumes.
+- A new worktree has only what git tracks: install dependencies and copy any
+  ignored files (`.env`) the task needs.
+
 ### Project rules
 
 Rules are written once per project (**Rules** in a lane, or **⌘⇧P**) and every

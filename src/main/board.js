@@ -14,9 +14,15 @@ const crypto = require('crypto');
 const STATUSES = ['backlog', 'ready', 'queued', 'active', 'waiting', 'review', 'done'];
 const DEFAULT_PROJECT_LIMIT = 3;
 const DEFAULT_GLOBAL_LIMIT = 8;
-const EDITABLE = ['title', 'brief', 'agent'];
+const EDITABLE = ['title', 'brief', 'agent', 'isolation', 'links'];
+const ISOLATION = ['auto', 'worktree', 'main'];
 
 function now() { return new Date().toISOString(); }
+
+function cleanLinks(links) {
+  const list = Array.isArray(links) ? links : String(links || '').split('\n');
+  return [...new Set(list.map((l) => String(l || '').trim()).filter(Boolean))];
+}
 
 function clampLimit(n, fallback) {
   const v = Math.floor(Number(n));
@@ -51,7 +57,7 @@ class Board {
     return t ? { ...t } : null;
   }
 
-  create({ cwd, title, brief = '', agent = null, status = 'ready' }) {
+  create({ cwd, title, brief = '', agent = null, status = 'ready', isolation = 'auto', links = [] }) {
     if (!cwd) throw new Error('a task needs a project');
     const clean = String(title || '').trim();
     if (!clean) throw new Error('a task needs a title');
@@ -64,6 +70,10 @@ class Board {
       agent: agent || null,          // null: the project's default agent
       status,
       sessionId: null,               // the agent's own session id, for resume
+      isolation: ISOLATION.includes(isolation) ? isolation : 'auto',
+      worktree: null,                // { path, branch, base, runCwd, root } once created
+      links: cleanLinks(links),      // MRs, tickets: anything worth a click
+      diffStat: null,                // { files, added, removed } since the task started
       createdAt: now(),
       updatedAt: now(),
       statusAt: now(),
@@ -84,6 +94,16 @@ class Board {
         t.title = v;
       } else if (k === 'brief') {
         t.brief = String(patch.brief || '').trim();
+      } else if (k === 'links') {
+        t.links = cleanLinks(patch.links);
+      } else if (k === 'isolation') {
+        if (!ISOLATION.includes(patch.isolation)) throw new Error(`unknown isolation: ${patch.isolation}`);
+        // Where a task runs is fixed once it has run: its conversation and
+        // its changes live there.
+        if (patch.isolation !== t.isolation && (t.sessionId || t.worktree)) {
+          throw new Error('a task that has started keeps where it runs');
+        }
+        t.isolation = patch.isolation;
       } else {
         t.agent = patch.agent || null;
       }
@@ -123,6 +143,21 @@ class Board {
     if (t.nextStep === v) return { ...t };
     t.nextStep = v;
     t.nextStepAt = now();
+    this.save();
+    return { ...t };
+  }
+
+  setWorktree(id, worktree) {
+    const t = this._find(id);
+    t.worktree = worktree || null;
+    t.updatedAt = now();
+    this.save();
+    return { ...t };
+  }
+
+  setDiffStat(id, stat) {
+    const t = this._find(id);
+    t.diffStat = stat || null;
     this.save();
     return { ...t };
   }
@@ -274,5 +309,5 @@ function openingPrompt(task) {
 }
 
 module.exports = {
-  Board, STATUSES, openingPrompt, rulesText, DEFAULT_PROJECT_LIMIT, DEFAULT_GLOBAL_LIMIT,
+  Board, STATUSES, ISOLATION, openingPrompt, rulesText, DEFAULT_PROJECT_LIMIT, DEFAULT_GLOBAL_LIMIT,
 };

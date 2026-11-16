@@ -174,5 +174,18 @@ ok('next step is stored and stamped only when it changes', () => {
   assert.strictEqual(b.setNextStep(t.id, '').nextStep, null);
 });
 
+ok('isolation, links and worktree fields', () => {
+  const b = new Board(file);
+  const t = b.create({ cwd: '/p', title: 'I', links: ' https://x/1 \nhttps://x/1\n\n https://x/2' });
+  assert.strictEqual(t.isolation, 'auto');
+  assert.deepStrictEqual(t.links, ['https://x/1', 'https://x/2']);
+  assert.strictEqual(b.update(t.id, { isolation: 'main' }).isolation, 'main');
+  assert.throws(() => b.update(t.id, { isolation: 'cloud' }), /unknown isolation/);
+  b.setWorktree(t.id, { path: '/w', branch: 'seamux/i', base: 'abc', runCwd: '/w', root: '/p' });
+  assert.throws(() => b.update(t.id, { isolation: 'worktree' }), /keeps where it runs/);
+  assert.deepStrictEqual(b.setDiffStat(t.id, { files: 1, added: 2, removed: 0 }).diffStat, { files: 1, added: 2, removed: 0 });
+  assert.deepStrictEqual(b.update(t.id, { links: ['https://y'] }).links, ['https://y']);
+});
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`BOARD: ALL ${results} PASSED`);

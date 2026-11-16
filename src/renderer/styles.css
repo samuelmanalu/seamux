@@ -122,13 +122,13 @@ li.row:hover .row-close { opacity: 1; }
   border-bottom: 1px solid var(--line);
   -webkit-app-region: drag;
 }
-#crumb { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
-#crumb-title { font-weight: 600; }
+#crumb { display: flex; align-items: baseline; gap: 9px; min-width: 0; flex: 1 1 auto; overflow: hidden; }
+#crumb-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 60px; }
 #crumb-path {
   color: var(--fg-dim); font-size: 11px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-#crumb-state { font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
+#crumb-state { font-size: 11px; color: var(--fg-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 
 #terminals { flex: 1; position: relative; min-height: 0; }
 .term-pane {
@@ -419,7 +419,8 @@ textarea.field { resize: vertical; min-height: 130px; line-height: 1.5; }
 #env-empty p { margin: 0 auto; max-width: 380px; line-height: 1.55; }
 .env-proj.current { background: rgba(122,162,247,.08); border-radius: 6px; padding-left: 6px; }
 
-#crumb-right { display: flex; align-items: center; gap: 10px; -webkit-app-region: no-drag; }
+#crumb-right { display: flex; align-items: center; gap: 8px; -webkit-app-region: no-drag; min-width: 0; flex: 0 1 auto; margin-left: 12px; }
+#crumb-right > button { white-space: nowrap; flex: 0 0 auto; }
 #session-context {
   background: var(--bg-3); color: var(--fg); border: 1px solid var(--line);
   border-radius: 6px; padding: 3px 9px; font-size: 11.5px; cursor: pointer;
@@ -647,3 +648,49 @@ textarea.field { resize: vertical; min-height: 130px; line-height: 1.5; }
 .kn-call-head { display: flex; flex-direction: column; gap: 2px; }
 .imp-list { display: flex; flex-direction: column; gap: 8px; }
 .imp-row { align-items: flex-start; line-height: 1.45; }
+
+/* ---------- worktrees, diff, task panel ---------- */
+.b-stat { font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+.b-stat .add { color: var(--idle); }
+.b-stat .del { color: var(--needs); }
+.b-stack { display: flex; flex-direction: column; gap: 4px; }
+.b-where { font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+#session-task {
+  background: var(--bg-3); color: var(--fg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 9px; font-size: 11.5px; cursor: pointer;
+}
+#session-task:hover { border-color: var(--accent); }
+.modal-card.diffview { max-width: min(1100px, 92vw); height: 86vh; }
+.d-body { display: grid; grid-template-columns: 220px 1fr; gap: 12px; height: 100%; min-height: 0; }
+.modal-card.diffview .modal-body { display: flex; min-height: 0; }
+.modal-card.diffview .d-body { flex: 1; }
+.d-files { display: flex; flex-direction: column; gap: 2px; overflow: auto; min-height: 0; }
+.d-file {
+  text-align: left; background: none; border: 0; color: var(--fg-dim); font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 4px 6px; border-radius: 5px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.d-file:hover { background: var(--bg-3); color: var(--fg); }
+.d-text { overflow: auto; min-height: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 0; font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.d-line { padding: 0 12px; white-space: pre; }
+.d-line.add { background: rgba(158,206,106,.1); color: #c3e88d; }
+.d-line.del { background: rgba(247,118,142,.1); color: #ff9fae; }
+.d-line.hunk { color: var(--accent); }
+.d-line.meta { color: var(--fg-dim); }
+.d-line.file { margin-top: 10px; padding-top: 6px; padding-bottom: 6px; border-top: 1px solid var(--line); font-weight: 650; color: var(--fg); background: var(--bg-2); }
+.d-line.file:first-child { margin-top: 0; border-top: 0; }
+.d-path { margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+#taskdrawer {
+  position: absolute; top: 38px; right: 0; bottom: 0; width: 300px; z-index: 4;
+  background: var(--bg-2); border-left: 1px solid var(--line);
+  padding: 12px 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+}
+#main.drawer-open #terminals { margin-right: 300px; }
+.td-head { display: flex; align-items: flex-start; gap: 8px; }
+.td-head strong { flex: 1; line-height: 1.3; }
+.td-sec { display: flex; flex-direction: column; gap: 4px; }
+.td-label { font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--fg-dim); }
+.td-text { line-height: 1.45; overflow-wrap: anywhere; }
+.td-link { color: var(--accent); overflow-wrap: anywhere; font-size: 12px; }
+.td-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
+.td-actions .mini, .td-sec .mini { margin-left: 0; align-self: flex-start; }
