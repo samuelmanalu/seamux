@@ -196,6 +196,10 @@ class PtyManager extends EventEmitter {
       rules: opts.rules || [],
       instructionCount: opts.instructionCount || 0,
       prePromptCount: opts.prePromptCount || 0,
+      // Claude Code's own session id (passed at spawn via --session-id), so
+      // this pane can be correlated with what Jejak indexed for it. Null for
+      // profiles that have no such concept (Gemini, Shell, Codex).
+      jejakSessionId: opts.jejakSessionId || null,
       envKeys: Object.keys(opts.env || {}),
       envWarnings: opts.envWarnings || [],
       // What the process was actually launched with, so we can tell whether a
@@ -315,7 +319,7 @@ class PtyManager extends EventEmitter {
   }
 
   /** Relaunch in place so the pane, id and position survive. */
-  restart(id, { vars, args, envSetIds, envSetNames, envWarnings, instructionCount, prePromptCount } = {}) {
+  restart(id, { vars, args, envSetIds, envSetNames, envWarnings, instructionCount, prePromptCount, jejakSessionId } = {}) {
     const s = this.sessions.get(id);
     if (!s) return null;
 
@@ -324,6 +328,9 @@ class PtyManager extends EventEmitter {
     if (args) s.args = args;
     if (instructionCount !== undefined) s.instructionCount = instructionCount;
     if (prePromptCount !== undefined) s.prePromptCount = prePromptCount;
+    // A restart is a fresh conversation (see note above), so it gets a fresh
+    // Claude session id too -- never reuse one across a respawn.
+    if (jejakSessionId !== undefined) s.jejakSessionId = jejakSessionId;
     try { if (!s.exited) s.proc.kill(); } catch { /* already gone */ }
 
     const proc = pty.spawn(s.command, s.args, {
@@ -399,6 +406,7 @@ class PtyManager extends EventEmitter {
       contextPending: s.contextPending,
       profileId: s.profileId,
       profileLabel: s.profileLabel,
+      jejakSessionId: s.jejakSessionId || null,
     };
   }
 

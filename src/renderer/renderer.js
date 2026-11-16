@@ -10,6 +10,7 @@ let order = [];          // session ids, sidebar order
 let activeId = null;
 let debugOn = false;
 let debugTimer = null;
+let artifactsOn = false;
 
 const $ = (sel) => document.querySelector(sel);
 const el = {
@@ -27,6 +28,11 @@ const el = {
   debug: $('#debug'),
   debugScreen: $('#debug-screen'),
   debugVerdict: $('#debug-verdict'),
+  sessionArtifacts: $('#session-artifacts'),
+  artifacts: $('#artifactspanel'),
+  artifactsBody: $('#artifacts-body'),
+  artifactsSub: $('#artifacts-sub'),
+  artifactsClose: $('#artifacts-close'),
 };
 
 const THEME = {
@@ -111,6 +117,7 @@ function activate(id) {
   renderSessions();
   renderCrumb();
   if (debugOn) refreshDebug();
+  if (artifactsOn) refreshArtifacts();
 }
 
 async function closeSession(id) {
@@ -333,6 +340,66 @@ function toggleDebug() {
   if (activeId) requestAnimationFrame(() => panes.get(activeId).fit.fit());
 }
 
+/* --------------------------------------------------------------- artifacts */
+
+// Card fields (title, location, ...) come from artifact-card.js.
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function renderArtifactCard(p) {
+  const isUrl = /^https?:\/\//.test(p.location);
+  const ts = p.createdAt ? String(p.createdAt).slice(0, 16).replace('T', ' ') : '';
+  const locHtml = !p.location ? '' : (isUrl
+    ? `<a class="artifact-link" href="${escapeHtml(p.location)}" target="_blank" rel="noopener">${escapeHtml(p.location)}</a>`
+    : `<div class="artifact-path" title="${escapeHtml(p.location)}">${escapeHtml(p.location)}</div>`);
+  return `<div class="artifact-card">
+    <div class="artifact-card-head">
+      <span class="artifact-kind ${p.kind}">${p.label}</span>
+      <span class="artifact-ts">${ts}</span>
+    </div>
+    <div class="artifact-title">${escapeHtml(p.title)}</div>
+    ${p.desc ? `<div class="artifact-desc">${escapeHtml(p.desc)}</div>` : ''}
+    ${locHtml}
+  </div>`;
+}
+
+async function refreshArtifacts() {
+  if (!activeId) {
+    el.artifactsBody.innerHTML = '<div class="artifacts-empty">No active session.</div>';
+    el.artifactsSub.textContent = '';
+    return;
+  }
+  const pane = panes.get(activeId);
+  if (!pane.meta.jejakSessionId) {
+    el.artifactsSub.textContent = pane.meta.profileLabel || '';
+    el.artifactsBody.innerHTML =
+      '<div class="artifacts-empty">This profile has no Jejak session id (only Claude Code panes are correlated), so nothing to show.</div>';
+    return;
+  }
+  el.artifactsBody.innerHTML = '<div class="artifacts-empty">Loading…</div>';
+  const { ok, artifacts, error } = await H.artifactsForSession(activeId);
+  if (activeId !== pane.meta.id) return; // switched panes while awaiting
+  el.artifactsSub.textContent = pane.meta.jejakSessionId.slice(0, 8);
+  if (!ok) {
+    el.artifactsBody.innerHTML = `<div class="artifacts-error">Could not reach Jejak: ${escapeHtml(error || 'unknown error')}</div>`;
+    return;
+  }
+  if (!artifacts.length) {
+    el.artifactsBody.innerHTML = '<div class="artifacts-empty">No artifacts indexed for this session yet.</div>';
+    return;
+  }
+  el.artifactsBody.innerHTML = `<div class="artifacts-grid">${SeamuxArtifacts.cards(artifacts).map(renderArtifactCard).join('')}</div>`;
+}
+
+function toggleArtifacts() {
+  artifactsOn = !artifactsOn;
+  el.artifacts.hidden = !artifactsOn;
+  if (artifactsOn) refreshArtifacts();
+  if (activeId) requestAnimationFrame(() => panes.get(activeId).fit.fit());
+}
+
 /* -------------------------------------------------------------------- wire */
 
 H.onData(({ id, chunk }) => {
@@ -362,6 +429,7 @@ H.onExit(({ id }) => {
 H.onNewSession(newSession);
 H.onOpenProject(async ({ cwd, name }) => { await openProject(cwd, name); refreshProjects(); });
 H.onToggleDebug(toggleDebug);
+H.onToggleArtifacts(toggleArtifacts);
 H.onFocusSession(({ id, index }) => {
   const target = id || order[index];
   if (target && panes.has(target)) activate(target);
@@ -388,6 +456,9 @@ $('#ctxbar-restart').onclick = async () => {
 };
 
 $('#ctxbar-later').onclick = () => { el.ctxbar.hidden = true; };
+
+el.sessionArtifacts.onclick = toggleArtifacts;
+el.artifactsClose.onclick = toggleArtifacts;
 
 $('#new-session').onclick = newSession;
 $('#empty-new').onclick = newSession;

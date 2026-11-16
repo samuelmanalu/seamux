@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const crypto = require('crypto');
 const { app, BrowserWindow, ipcMain, dialog, Notification, Menu, shell } = require('electron');
 const { PtyManager, State } = require('./pty-manager');
 const { Store } = require('./store');
@@ -10,6 +11,7 @@ const { parseEnv } = require('./dotenv');
 const { GeneralContext } = require('./general-context');
 const { interpret } = require('./interpreter');
 const profiles = require('./profiles');
+const jejakBridge = require('./jejak-bridge');
 
 // Tests must never write into the real user's config. Set before anything
 // reads a path, so store and secrets both land in the throwaway directory.
@@ -152,14 +154,33 @@ function profileFor(cwd, explicitId) {
   return profiles.get(id, store.customProfiles());
 }
 
-function buildArgs(profile, instructions, prePrompts) {
+function buildArgs(profile, instructions, prePrompts, jejakSessionId) {
   const extra = (process.env.SEAMUX_EXTRA_ARGS || process.env.SEAMUX_CLAUDE_ARGS || '')
     .split(' ').filter(Boolean);
+  // Forcing Claude Code's own session id lets Jejak (the knowledge-graph
+  // indexer) be queried later by exactly this pane's id -- see jejak-bridge.js.
+  // Only the claude profile understands --session-id.
+  if (jejakSessionId && profile.id === 'claude') extra.push('--session-id', jejakSessionId);
   return profiles.buildArgs(profile, {
     instructions: instructions || [],
     prePrompts: prePrompts || [],
     extra,
   });
+}
+
+/** A fresh Claude session id for a pane about to be (re)spawned, or null for
+ * profiles Jejak has no hooks for. Never reused across a respawn -- a restart
+ * is a new conversation, so it gets a new id too.
+ *
+ * Gated on the RESOLVED command being literally 'claude', not just the
+ * profile id: SEAMUX_CLAUDE_BIN swaps in /bin/bash for tests (and could point
+ * a real user at a custom binary of unknown flag support), and an
+ * unrecognized --session-id makes bash exit(2) immediately -- confirmed by
+ * hand: `bash --session-id x` -> "invalid option", never spawns.
+ */
+function newJejakSessionId(profile) {
+  return (profile.id === 'claude' && profiles.commandFor(profile) === 'claude')
+    ? crypto.randomUUID() : null;
 }
 
 /**
@@ -266,6 +287,11 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+D',
           click: () => send('ui:toggleDebug'),
         },
+        {
+          label: 'Artifacts',
+          accelerator: 'CmdOrCtrl+Shift+A',
+          click: () => send('ui:toggleArtifacts'),
+        },
         { role: 'toggleDevTools' },
         { type: 'separator' },
         { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
@@ -289,10 +315,12 @@ function wireIpc() {
     const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
     const profile = profileFor(o.cwd, o.profileId);
     const dropped = profiles.unsupported(profile);
+    const jejakSessionId = newJejakSessionId(profile);
     return ptys.create({
       ...o,
       command: o.command || profiles.commandFor(profile),
-      args: buildArgs(profile, instructions, prePrompts),
+      args: buildArgs(profile, instructions, prePrompts, jejakSessionId),
+      jejakSessionId,
       env: vars, envSetIds: ids, envSetNames: names, envWarnings: warnings,
       instructionCount: profile.instructions.mode === 'none' ? 0 : instructions.length,
       prePromptCount: profile.prompt.mode === 'none' ? 0 : prePrompts.length,
@@ -321,8 +349,11 @@ function wireIpc() {
     const current = ptys.list().find((s) => s.id === id);
     const ids = envSetIds || (current ? current.envSetIds : []) || [];
     const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
+    const profile = profileFor(null, (current || {}).profileId);
+    const jejakSessionId = newJejakSessionId(profile);
     return ptys.restart(id, {
-      vars, args: buildArgs(profileFor(null, (current || {}).profileId), instructions, prePrompts),
+      vars, args: buildArgs(profile, instructions, prePrompts, jejakSessionId),
+      jejakSessionId,
       envSetIds: ids, envSetNames: names, envWarnings: warnings,
       instructionCount: instructions.length, prePromptCount: prePrompts.length,
     });
@@ -359,6 +390,10 @@ function wireIpc() {
   ipcMain.handle('sessions:remove', (_e, id) => { ptys.remove(id); updateBadge(); });
   ipcMain.handle('sessions:replay', (_e, id) => ptys.replay(id));
   ipcMain.handle('sessions:screenText', (_e, id) => ptys.screenText(id));
+  ipcMain.handle('artifacts:forSession', (_e, id) => {
+    const info = ptys.list().find((s) => s.id === id);
+    return jejakBridge.artifactsForSession(info ? info.jejakSessionId : null);
+  });
   ipcMain.handle('sessions:markRead', (_e, id) => {
     activeSessionId = id;
     ptys.markRead(id);
