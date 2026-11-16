@@ -47,4 +47,11 @@ function extractNextStep(screen, profileId) {
   return null;
 }
 
-module.exports = { extractNextStep };
+/** A message as a one-line next step: markdown stripped, capped. */
+function summarize(text) {
+  const t = clean(String(text || ''));
+  if (!t) return null;
+  return t.length > MAX ? `${t.slice(0, MAX - 1)}…` : t;
+}
+
+module.exports = { extractNextStep, summarize };

@@ -112,6 +112,12 @@ see what every terminal is for and what comes next.
   card there asks what it waits for, and the card shows that and for how long.
 - **Next step.** When a Claude Code agent stops, its latest message becomes the
   card's next step, so the board says where each piece of work stands.
+- **Claude Code hooks.** Claude terminals also get Seamux's hooks (through
+  `--settings`, which adds to your own hooks rather than replacing them): a
+  sent prompt marks the task Running, a notification marks it Needs you in
+  Claude's own words, and a finished turn gives the exact last message. A
+  status reported this way holds until the terminal prints something new; other
+  agents rely on reading the screen.
 - **Peek (Space).** Look at a task's terminal from the board and answer a quick
   prompt (1, 2, 3, Enter, Esc, or a typed reply) without leaving it.
 - **Keys on the board:** arrows or **H J K L** to move between cards, **S**

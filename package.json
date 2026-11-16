@@ -10,7 +10,7 @@
     "rebuild": "electron-rebuild -f -w node-pty",
     "postinstall": "electron-rebuild -f -w node-pty",
     "dist": "electron-builder --mac",
-    "test": "npm run test:dotenv && npm run test:env && npm run test:general && npm run test:profiles && npm run test:shell-path && npm run test:artifact-card && npm run test:board && npm run test:task-runner && npm run test:next-step && npm run test:knowledge && npm run test:worktree && npm run test:control && npm run test:interpreter && npm run test:detector && npm run test:pty && npm run test:e2e && npm run test:env-e2e && npm run test:wizard && npm run test:session-context && npm run test:artifacts-e2e && npm run test:board-e2e && npm run test:knowledge-e2e && npm run test:worktree-e2e && npm run test:planner-e2e && npm run test:general-e2e && npm run test:interpret-e2e",
+    "test": "npm run test:dotenv && npm run test:env && npm run test:general && npm run test:profiles && npm run test:shell-path && npm run test:artifact-card && npm run test:board && npm run test:task-runner && npm run test:next-step && npm run test:knowledge && npm run test:worktree && npm run test:control && npm run test:interpreter && npm run test:detector && npm run test:pty && npm run test:e2e && npm run test:env-e2e && npm run test:wizard && npm run test:session-context && npm run test:artifacts-e2e && npm run test:board-e2e && npm run test:knowledge-e2e && npm run test:worktree-e2e && npm run test:planner-e2e && npm run test:hooks-e2e && npm run test:general-e2e && npm run test:interpret-e2e",
     "test:detector": "node test/detector.test.js",
     "test:pty": "SEAMUX_USER_DATA=$(mktemp -d) electron test/pty.smoke.js",
     "test:e2e": "SEAMUX_USER_DATA=$(mktemp -d) SEAMUX_CLAUDE_BIN=/bin/bash SEAMUX_E2E=$PWD/test/e2e.js electron .",
@@ -36,7 +36,8 @@
     "test:board-e2e": "node scripts/run-board-e2e.js",
     "test:knowledge-e2e": "node scripts/run-board-e2e.js test/knowledge.e2e.js",
     "test:worktree-e2e": "node scripts/run-board-e2e.js test/worktree.e2e.js",
-    "test:planner-e2e": "node scripts/run-board-e2e.js test/planner.e2e.js"
+    "test:planner-e2e": "node scripts/run-board-e2e.js test/planner.e2e.js",
+    "test:hooks-e2e": "node scripts/run-board-e2e.js test/hooks.e2e.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

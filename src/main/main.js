@@ -13,7 +13,7 @@ const { interpret } = require('./interpreter');
 const profiles = require('./profiles');
 const { KnowledgeClient, EXAMPLES: KNOWLEDGE_EXAMPLES } = require('./knowledge');
 const { Board, openingPrompt, rulesText } = require('./board');
-const { extractNextStep } = require('./next-step');
+const { extractNextStep, summarize } = require('./next-step');
 const worktrees = require('./worktree');
 const { ControlServer } = require('./control');
 const { TaskRunner } = require('./task-runner');
@@ -171,6 +171,8 @@ function buildArgs(profile, instructions, prePrompts, session = {}) {
   // later about exactly this pane's session (the Artifacts panel), and lets a
   // board task resume the same conversation after a restart.
   // Only the claude profile understands --session-id / --resume.
+  // Seamux's hooks (status and the exact last message), added to the user's own.
+  if (session.settings && profile.id === 'claude') extra.push('--settings', session.settings);
   // The knowledge server, so the agent can search and save knowledge itself.
   // --mcp-config takes several values, so it must be followed by another
   // option, never by the positional opening prompt: --session-id / --resume
@@ -381,7 +383,9 @@ async function createSession(o) {
   if (plan && profile.instructions.mode === 'flag') rules.instructions.push(plan);
   else if (plan && !resume) rules.prompts.push(plan);
   const prompts = resume ? [] : [...rules.prompts, ...prePrompts, ...(o.taskPrompts || [])];
-  const mcpConfig = profile.id === 'claude' && profiles.commandFor(profile) === 'claude' ? knowledgeMcpFile() : null;
+  const realClaude = profile.id === 'claude' && profiles.commandFor(profile) === 'claude';
+  const mcpConfig = realClaude ? knowledgeMcpFile() : null;
+  const settings = realClaude ? claudeHooksFile() : null;
   const { resumeSessionId, taskPrompts, runCwd, ...rest } = o;
   return ptys.create({
     ...rest,
@@ -390,7 +394,7 @@ async function createSession(o) {
     projectCwd: o.cwd,
     projectRuleCount: rules.count, rulesVia: rules.via, rulesVersion: rules.version,
     command: o.command || profiles.commandFor(profile),
-    args: buildArgs(profile, [...rules.instructions, ...instructions], prompts, { id: sessionId, resume, mcpConfig }),
+    args: buildArgs(profile, [...rules.instructions, ...instructions], prompts, { id: sessionId, resume, mcpConfig, settings }),
     agentSessionId: sessionId,
     env: vars, envSetIds: ids, envSetNames: names, envWarnings: warnings,
     instructionCount: profile.instructions.mode === 'none' ? 0 : instructions.length,
@@ -415,6 +419,52 @@ function paneEnv(projectCwd) {
     PATH: `${path.join(app.getPath('userData'), 'bin')}:${process.env.PATH || ''}`,
   };
 }
+
+/**
+ * Claude Code hooks that report to Seamux: a prompt sent (working), a
+ * notification (it needs you, with Claude's own words), and a finished turn
+ * (with its exact last message). Passed with --settings, which adds to the
+ * user's own hooks rather than replacing them.
+ */
+function claudeHooksFile() {
+  if (!controlSocket) return null;
+  const fs = require('fs');
+  const launcher = path.join(app.getPath('userData'), 'bin', 'seamux');
+  const q = `'${launcher.replace(/'/g, `'\\''`)}'`;   // the path has spaces
+  const cmd = (event) => [{ hooks: [{ type: 'command', command: `${q} hook ${event}`, timeout: 5 }] }];
+  const file = path.join(app.getPath('userData'), 'claude-hooks.json');
+  fs.writeFileSync(file, JSON.stringify({
+    hooks: { UserPromptSubmit: cmd('prompt'), Notification: cmd('notification'), Stop: cmd('stop') },
+  }, null, 2));
+  return file;
+}
+
+/** A Claude Code hook event, reported by `seamux hook` from inside a terminal. */
+function onHook(req) {
+  const info = ptys.list().find((s) => s.id === req.pane);
+  if (!info || info.exited) throw new Error('no such terminal');
+  const p = req.payload || {};
+  // The report must come from the conversation this terminal is running.
+  if (!info.agentSessionId || p.session_id !== info.agentSessionId) throw new Error('not this terminal’s session');
+  let status = null;
+  if (req.event === 'prompt') status = ptys.hint(info.id, State.RUNNING, 'working on your prompt');
+  else if (req.event === 'notification') status = ptys.hint(info.id, State.NEEDS_INPUT, p.message || 'needs your attention');
+  else if (req.event === 'stop') {
+    status = ptys.hint(info.id, State.IDLE, 'finished its turn');
+    const text = summarize(p.last_assistant_message);
+    if (info.taskId && board.get(info.taskId) && text) {
+      board.setNextStep(info.taskId, text);
+      hookStopAt.set(info.id, Date.now());
+      refreshDiffStat(info.taskId);
+      runner.emit('changed');
+    }
+  } else throw new Error(`unknown hook event: ${req.event}`);
+  if (status) { send('session:status', status); maybeNotify(status); updateBadge(); }
+  return { applied: req.event };
+}
+
+/** When a pane last got its next step from a Stop hook, so the screen reader does not overwrite it. */
+const hookStopAt = new Map();
 
 /** What the project's planner is for, and how it puts tasks on the board. */
 function plannerText(cwd) {
@@ -444,6 +494,7 @@ async function wireControl() {
   control = new ControlServer({
     socketPath: sock,
     handle: async (req) => {
+      if (req.cmd === 'hook') return onHook(req);
       const project = req.project ? path.resolve(String(req.project)) : '';
       if (!project || !knownProject(project)) throw new Error(`not a project on the Seamux board: ${project || '(none)'}`);
       if (req.cmd === 'task.add') {
@@ -729,7 +780,9 @@ function wireBoard() {
     const stopped = (prev === State.RUNNING || prev === State.STARTING)
       && (s.state === State.IDLE || s.state === State.NEEDS_INPUT);
     if (!stopped) return;
-    const text = extractNextStep(ptys.screenText(s.id), s.profileId);
+    // A Stop hook already gave the exact message; the screen is only a fallback.
+    const fromHook = Date.now() - (hookStopAt.get(s.id) || 0) < 15000;
+    const text = fromHook ? null : extractNextStep(ptys.screenText(s.id), s.profileId);
     if (text) { board.setNextStep(s.taskId, text); runner.emit('changed'); }
     refreshDiffStat(s.taskId);
   });

@@ -9,6 +9,8 @@ const { Terminal } = require('@xterm/headless');
 const { classify, State } = require('./status-detector');
 
 const POLL_MS = 400;          // how often we re-read the screen and reclassify
+// Output this soon after a hook's report still belongs to the screen it described.
+const HINT_GRACE_MS = 500;
 const SCROLLBACK = 5000;
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 34;
@@ -125,6 +127,19 @@ class PtyManager extends EventEmitter {
     // context change, then a new rule): deliver all of them, newest last.
     s.pendingInjection = s.pendingInjection ? `${s.pendingInjection} ${line}` : line;
     return true;
+  }
+
+  /**
+   * A status the agent reported itself (Claude Code hooks). Applied at once;
+   * the screen detector keeps running and has the last word on what the
+   * screen shows.
+   */
+  hint(id, state, reason) {
+    const s = this.sessions.get(id);
+    if (!s || s.exited) return null;
+    s.hintAt = Date.now();
+    this._setStatus(s, { state, reason, rule: 'hook' });
+    return this.describe(s);
   }
 
   /** Record which project rules this session has, and how they reached it. */
@@ -474,7 +489,10 @@ class PtyManager extends EventEmitter {
         exited: s.exited,
         bellPending: s.bellPending,
       }, s.rules);
-      this._setStatus(s, verdict);
+      // A status the agent reported itself (a hook) holds until the terminal
+      // prints something new; a short grace covers output already on its way.
+      const hookHolds = s.hintAt && !s.exited && s.lastOutputAt <= s.hintAt + HINT_GRACE_MS;
+      if (!hookHolds) this._setStatus(s, verdict);
 
       if (s.pendingInjection && verdict.state === State.IDLE) {
         const text = s.pendingInjection;

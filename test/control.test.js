@@ -79,6 +79,30 @@ test('errors go to stderr with a non-zero exit', async () => {
   assert.ok(/Seamux is not running/.test(r.stderr), r.stderr);
 });
 
+const cliIn = (args, input, env = {}) => new Promise((resolve) => {
+  const p = execFile(process.execPath, [CLI, ...args], { env: { PATH: process.env.PATH, SEAMUX_SOCKET: sock, SEAMUX_SESSION_ID: 's7', ...env } },
+    (err, stdout, stderr) => resolve({ code: err ? err.code : 0, stdout, stderr }));
+  p.stdin.end(input);
+});
+
+test('seamux hook forwards the event quietly', async () => {
+  const r = await cliIn(['hook', 'stop'], JSON.stringify({ session_id: 'abc', hook_event_name: 'Stop', last_assistant_message: 'Done.', transcript_path: '/x', extra: 1 }));
+  assert.deepStrictEqual([r.code, r.stdout, r.stderr], [0, '', '']);
+  assert.deepStrictEqual(seen.pop(), {
+    cmd: 'hook', event: 'stop', pane: 's7',
+    payload: { session_id: 'abc', hook_event_name: 'Stop', last_assistant_message: 'Done.' },
+  });
+});
+
+test('seamux hook never fails: refused, garbage input, or no Seamux', async () => {
+  let r = await cliIn(['hook', 'bogus'], 'not json');
+  assert.deepStrictEqual([r.code, r.stderr], [0, '']);
+  r = await cliIn(['hook', 'stop'], '{}', { SEAMUX_SOCKET: path.join(dir, 'gone.sock') });
+  assert.deepStrictEqual([r.code, r.stderr], [0, '']);
+  r = await cliIn(['hook', 'stop'], '{}', { SEAMUX_SOCKET: '' });
+  assert.deepStrictEqual([r.code, r.stderr], [0, '']);
+});
+
 test('help', async () => {
   const r = await cli(['--help']);
   assert.ok(/seamux task add/.test(r.stdout) && r.code === 0);

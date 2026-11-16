@@ -92,4 +92,5 @@ async function main() {
   httpServer.listen(port, '127.0.0.1', () => console.log('READY'));
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+if (require.main === module) main().catch((e) => { console.error(e); process.exit(1); });
+module.exports = { build };

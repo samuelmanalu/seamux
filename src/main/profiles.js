@@ -79,8 +79,8 @@ const PROFILES = {
     binEnv: 'SEAMUX_GEMINI_BIN',
     // No --append-system-prompt equivalent; standing rules go in GEMINI.md.
     instructions: { mode: 'none' },
-    // The positional argument is ONE-SHOT. -i runs the prompt and stays
-    // interactive, which is what a session needs.
+    // -i runs the prompt and stays interactive, which is what a session
+    // needs (checked against gemini --help, 2026-11-17).
     prompt: { mode: 'flag', flag: '-i' },
     globalRules: '~/.gemini/GEMINI.md',
     rules: [],

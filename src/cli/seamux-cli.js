@@ -30,8 +30,34 @@ function parse(argv) {
   return out;
 }
 
+/**
+ * `seamux hook <event>`: called by Claude Code's hooks with the event as JSON
+ * on stdin. Reports it to Seamux and stays silent: whatever happens, it exits
+ * 0 quickly, so a hook can never get in Claude's way.
+ */
+async function hook(event) {
+  const raw = await new Promise((resolve) => {
+    let buf = '';
+    const done = () => resolve(buf);
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (c) => { buf += c; });
+    process.stdin.on('end', done);
+    setTimeout(done, 1500).unref();
+  });
+  let p = {};
+  try { p = JSON.parse(raw); } catch { /* nothing usable */ }
+  const socket = process.env.SEAMUX_SOCKET;
+  if (!socket) return;
+  const payload = {
+    session_id: p.session_id, hook_event_name: p.hook_event_name,
+    last_assistant_message: p.last_assistant_message, message: p.message, notification_type: p.notification_type,
+  };
+  try { await request(socket, { cmd: 'hook', event, pane: process.env.SEAMUX_SESSION_ID, payload }, 2000); } catch { /* Seamux gone: ignore */ }
+}
+
 async function main() {
   const args = parse(process.argv.slice(2));
+  if (args._[0] === 'hook') { await hook(args._[1]); return 0; }
   const [group, verb, ...rest] = args._;
   if (args.help || !group || group === 'help') { process.stdout.write(HELP); return 0; }
   const socket = process.env.SEAMUX_SOCKET;

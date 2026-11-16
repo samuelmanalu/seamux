@@ -133,6 +133,11 @@ class OAuthProvider {
     this.port = port;
     this.clientName = clientName;
     this.waiting = null;          // { promise, server }
+    // Only an explicit "Sign in" may open the browser. A background call
+    // (saving a rule, say) that finds the token missing just fails with
+    // "needs sign-in" instead of popping a browser window at the user.
+    this.interactive = false;
+    this.pendingCode = null;      // the code from the browser, once it arrives
   }
 
   get redirectUrl() { return `http://127.0.0.1:${this.port}/callback`; }
@@ -170,7 +175,11 @@ class OAuthProvider {
 
   /** Listen for the browser's redirect, then open the sign-in page. */
   async redirectToAuthorization(url) {
-    this.waitForCode();
+    if (!this.interactive) return;
+    // Kept, not just awaited: a fast browser can deliver the code before the
+    // caller starts waiting for it.
+    this.pendingCode = this.waitForCode();
+    this.pendingCode.catch(() => {});
     await this.openExternal(url.toString());
   }
 
@@ -315,16 +324,22 @@ class KnowledgeClient extends EventEmitter {
     await this.close();
     const transport = this._transport(c.server);
     const client = new Client({ name: 'seamux', version: '0.1.0' });
+    this.oauth.interactive = true;
     try {
-      await client.connect(transport);
-      // Already signed in.
-      this.client = client; this.transport = transport; this.key = JSON.stringify(c.server);
-      return { signedIn: true, already: true };
-    } catch (err) {
-      if (!(err instanceof UnauthorizedError) || !this.oauth.waiting) throw err;
+      try {
+        await client.connect(transport);
+        // Already signed in.
+        this.client = client; this.transport = transport; this.key = JSON.stringify(c.server);
+        return { signedIn: true, already: true };
+      } catch (err) {
+        if (!(err instanceof UnauthorizedError) || !this.oauth.pendingCode) throw err;
+      }
+      const code = await this.oauth.pendingCode;
+      await transport.finishAuth(code);
+    } finally {
+      this.oauth.interactive = false;
+      this.oauth.pendingCode = null;
     }
-    const code = await this.oauth.waitForCode();
-    await transport.finishAuth(code);
     try { await transport.close(); } catch { /* closed */ }
     await this.connect();
     return { signedIn: true };

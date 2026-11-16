@@ -126,15 +126,60 @@ test('OAuth provider stores its state and catches the redirect', async () => {
   p.saveClientInformation({ client_id: 'c1' });
   p.saveTokens({ access_token: 'a' });
   p.saveCodeVerifier('v');
+  await p.redirectToAuthorization(new URL('https://auth.example/quiet'));
+  assert.strictEqual(opened, null, 'a background call never opens the browser');
+  p.interactive = true;
   assert.deepStrictEqual([p.clientInformation().client_id, p.tokens().access_token, p.codeVerifier()], ['c1', 'a', 'v']);
   await p.redirectToAuthorization(new URL('https://auth.example/authorize?x=1'));
   assert.strictEqual(opened, 'https://auth.example/authorize?x=1');
-  const got = p.waitForCode();
+  const got = p.pendingCode;
   await new Promise((res) => http.get('http://127.0.0.1:47870/callback?code=CODE42', (r) => { r.resume(); r.on('end', res); }));
   assert.strictEqual(await got, 'CODE42');
   p.invalidateCredentials('tokens');
   assert.strictEqual(p.tokens(), undefined);
   assert.strictEqual(p.clientInformation().client_id, 'c1');
+});
+
+test('OAuth: full browser sign-in against a real OAuth MCP server, then reuse of the token', async () => {
+  const mcpPort = 48100 + Math.floor(Math.random() * 40);
+  const authPort = mcpPort + 50;
+  const srv = spawn(process.execPath, [path.join(__dirname, 'fixtures', 'oauth-mcp-server.js'), String(mcpPort), String(authPort)], { env: { ...process.env, FAKE_MCP_LOG: LOG } });
+  await new Promise((res, rej) => { srv.stdout.on('data', (d) => { if (/READY/.test(d)) res(); }); srv.on('exit', rej); });
+  // The "browser": follow redirects until the demo server sends us to Seamux's callback.
+  const opened = [];
+  const browser = async (url) => {
+    opened.push(url);
+    let next = url;
+    for (let i = 0; i < 5; i++) {
+      const r = await fetch(next, { redirect: 'manual' });
+      const loc = r.headers.get('location');
+      if (!loc) return;
+      next = new URL(loc, next).toString();
+      if (next.startsWith('http://127.0.0.1:47811/callback')) { await fetch(next); return; }
+    }
+  };
+  const secrets = memSecrets();
+  const cfg = { server: { type: 'http', url: `http://127.0.0.1:${mcpPort}/mcp`, oauth: true }, ...mappings };
+  const k = new KnowledgeClient({ getConfig: () => cfg, secrets, openExternal: browser });
+  try {
+    await assert.rejects(k.listTools(), (e) => e.needsSignIn === true, 'before sign-in the server says so');
+    assert.strictEqual(opened.length, 0, 'a plain call does not open the browser');
+    await k.close();
+    const r = await k.signIn();
+    assert.deepStrictEqual(r, { signedIn: true });
+    assert.ok(opened.length === 1 && /\/authorize\?/.test(opened[0]), `the browser opened the sign-in page: ${opened[0]}`);
+    const stored = secrets.read().knowledge.oauth;
+    assert.ok(stored.tokens && stored.tokens.access_token, 'the token is kept in the secret store');
+    assert.ok(stored.client && stored.client.client_id, 'the client registration is kept');
+    assert.deepStrictEqual(await k.importRules({ 'project.name': 'p' }), ['Never push to main', 'Run the tests before every commit']);
+    await k.close();
+    // A new client with the same store connects without asking again.
+    const k2 = new KnowledgeClient({ getConfig: () => cfg, secrets, openExternal: () => { throw new Error('should not ask again'); } });
+    assert.strictEqual((await k2.listTools()).length, 4);
+    await k2.close();
+    await k.signOut();
+    assert.deepStrictEqual(secrets.read().knowledge.oauth, {}, 'sign-out forgets the token');
+  } finally { await k.close(); srv.kill(); }
 });
 
 test('the Jejak example is plain mapping data', () => {
