@@ -92,8 +92,10 @@ function createWindow() {
     try { app.dock.setIcon(path.join(__dirname, '..', '..', 'assets', 'icon.png')); } catch { /* non-fatal */ }
   }
 
+  // Links open in the browser, and only web and mail links: anything else a
+  // task or a terminal shows (javascript:, file:, custom schemes) is ignored.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (/^(https?:|mailto:)/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
 
@@ -687,7 +689,12 @@ async function taskRunCwd(task) {
   }
   if (task.sessionId && !task.worktree) return task.cwd;   // began in the project folder
   let want = task.isolation === 'worktree';
-  if (task.isolation === 'auto') want = board.limitFor(task.cwd) > 1 && !!(await worktrees.repoRoot(task.cwd));
+  if (task.isolation === 'auto') {
+    const root = board.limitFor(task.cwd) > 1 ? await worktrees.repoRoot(task.cwd) : null;
+    // A repository without a first commit has nothing to branch from: automatic
+    // mode then uses the project folder.
+    want = !!root && await worktrees.hasCommits(root);
+  }
   if (!want) return task.cwd;
   const w = await worktrees.create({ projectCwd: task.cwd, task, baseDir: path.join(app.getPath('userData'), 'worktrees') });
   board.setWorktree(task.id, w);
@@ -708,6 +715,12 @@ async function refreshDiffStat(taskId) {
 
 /** Spawn the one terminal a board task owns. Used by the TaskRunner. */
 async function spawnTask(task) {
+  if (!require('fs').existsSync(task.cwd)) throw new Error(`the project folder no longer exists: ${task.cwd}`);
+  // A task owns one terminal: an earlier one that ended makes way.
+  for (const old of ptys.list().filter((s) => s.taskId === task.id && s.exited)) {
+    ptys.remove(old.id);
+    send('session:removed', { id: old.id });
+  }
   const runCwd = await taskRunCwd(task);
   task = board.get(task.id);
   const profile = profileFor(task.cwd, task.agent);
@@ -854,6 +867,9 @@ function wireBoard() {
   });
   ipcMain.handle('board:update', (_e, { id, patch }) => {
     const t = board.update(id, patch);
+    // The task's terminal carries its name.
+    const pane = runner.paneOf(id);
+    if (pane && pane.title !== t.title) send('session:status', ptys.setTitle(pane.id, t.title));
     runner.emit('changed');
     return t;
   });
@@ -1183,7 +1199,7 @@ app.whenReady().then(async () => {
   // Test seam: an end-to-end suite drives the real window through this.
   if (process.env.SEAMUX_E2E) {
     win.webContents.once('did-finish-load', () => {
-      require(process.env.SEAMUX_E2E)({ win, ptys, store, app, board, runner });
+      require(process.env.SEAMUX_E2E)({ win, ptys, store, app, board, runner, knowledge });
     });
   }
 

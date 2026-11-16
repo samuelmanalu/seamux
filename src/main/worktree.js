@@ -30,6 +30,11 @@ function git(cwd, args, { maxBuffer = 16 * 1024 * 1024 } = {}) {
   });
 }
 
+/** Does the repository have a first commit to branch from? */
+async function hasCommits(cwd) {
+  try { await git(cwd, ['rev-parse', '--verify', '--quiet', 'HEAD']); return true; } catch { return false; }
+}
+
 /** The repository's top folder, or null when the folder is not in a git repository. */
 async function repoRoot(cwd) {
   try { return (await git(cwd, ['rev-parse', '--show-toplevel'])).trim(); } catch { return null; }
@@ -58,7 +63,12 @@ async function create({ projectCwd, task, baseDir, name: given }) {
   if (!root) throw new Error('this project is not a git repository');
   // Folders resolve through symlinks (e.g. /tmp -> /private/tmp), so compare real paths.
   const rel = path.relative(fs.realpathSync(root), fs.realpathSync(projectCwd));
+  if (!(await hasCommits(root))) throw new Error('the repository has no commits yet; make a first commit, or run the task in the project folder');
   const base = (await git(root, ['rev-parse', 'HEAD'])).trim();
+  // A worktree folder deleted by hand is still registered with git until
+  // pruned, and would block adding it again. Prune only forgets worktrees
+  // whose folders are gone.
+  await git(root, ['worktree', 'prune']);
   const short = task.id.replace(/^t_/, '').slice(0, 6);
   const name = given || `${slugify(task.title)}-${short}`;
   const projectKey = `${path.basename(root)}-${crypto.createHash('sha1').update(root).digest('hex').slice(0, 6)}`;
@@ -142,4 +152,4 @@ async function remove({ root, path: wtPath, branch }) {
   return { removed: wtPath, branchKept: branch };
 }
 
-module.exports = { repoRoot, create, stat, diff, dirty, remove, slugify };
+module.exports = { repoRoot, hasCommits, create, stat, diff, dirty, remove, slugify };

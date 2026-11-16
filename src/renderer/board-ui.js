@@ -42,6 +42,18 @@
 
   /* ------------------------------------------------------------ helpers */
 
+  // Errors from the main process arrive as "Error invoking remote method
+  // 'x': Error: <message>"; show only the message.
+  /** Resize a terminal on the next frame, if it still exists by then. */
+  function refit(id) {
+    if (!id) return;
+    requestAnimationFrame(() => { const p = panes.get(id); if (p) p.fit.fit(); });
+  }
+
+  function errText(e) {
+    return String((e && e.message) || e).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+  }
+
   function h(tag, props = {}, ...kids) {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(props)) {
@@ -265,7 +277,7 @@
     root.hidden = !on;
     toggleBtn.classList.toggle('on', on);
     if (on) { refresh(); root.focus(); }
-    else if (currentId() && panes.has(currentId())) requestAnimationFrame(() => panes.get(currentId()).fit.fit());
+    else refit(currentId());
   }
 
   function toggle() { setVisible(!visible); }
@@ -295,7 +307,7 @@
       if (r && r.pane && !panes.has(r.pane.id)) addPane(r.pane);
       if (r && r.status === 'queued') flash(`Queued: ${r.reason}. It starts when a slot frees up.`);
     } catch (err) {
-      flash(`Could not start: ${err.message || err}`);
+      flash(`Could not start: ${errText(err)}`);
     }
   }
 
@@ -306,7 +318,7 @@
       if (r && r.pane && !panes.has(r.pane.id)) addPane(r.pane);
       if (r && r.status === 'queued') flash(`Queued: ${r.reason}.`);
     } catch (err) {
-      flash(`Could not move: ${err.message || err}`);
+      flash(`Could not move: ${errText(err)}`);
     }
   }
 
@@ -403,7 +415,7 @@
       renderDeps();
     };
     const read = () => ({ cwd: project.value, title: title.value, brief: brief.value, agent: agent.value || null, links: links.value, dependsOn: [...chosenDeps], ...(fixed ? {} : { isolation: isolation.value }) });
-    const fail = (e) => { err.textContent = e.message || String(e); err.hidden = false; };
+    const fail = (e) => { err.textContent = errText(e); err.hidden = false; };
 
     const buttons = [h('button', { class: 'btn', text: 'Cancel', onclick: () => m.close() })];
     if (isNew) {
@@ -422,7 +434,7 @@
         h('button', { class: 'btn danger', text: 'Delete', onclick: async () => {
           m.close();
           if (!(await UI().confirmDialog('Delete this task?', `“${task.title}” will be removed from the board.`))) return;
-          try { await H.boardRemove(task.id); } catch (e) { flash(e.message || String(e)); }
+          try { await H.boardRemove(task.id); } catch (e) { flash(errText(e)); }
         } }),
         task.worktree && !task.worktree.removed ? h('button', { class: 'btn', text: 'Remove worktree', title: 'Delete the worktree folder. Its branch, with every commit, is kept.', onclick: async () => {
           try { await H.boardRemoveWorktree(task.id); m.close(); flash(`Worktree removed. Branch ${task.worktree.branch} is kept.`); } catch (e) { fail(e); }
@@ -448,12 +460,17 @@
 
   function limitDialog(title, subtitle, value, save) {
     const input = h('input', { class: 'field', id: 'limit-input', type: 'number', min: '1', max: '50', value: String(value) });
+    const err = h('p', { class: 'b-err', hidden: true });
+    const go = async () => {
+      try { await save(input.value); m.close(); } catch (e) { err.textContent = errText(e); err.hidden = false; }
+    };
+    input.onkeydown = (e) => { if (e.key === 'Enter') go(); };
     const m = UI().openModal({
       title, subtitle,
-      body: input,
+      body: h('div', { class: 'b-stack' }, input, err),
       footer: h('div', { class: 'modal-actions' },
         h('button', { class: 'btn', text: 'Cancel', onclick: () => m.close() }),
-        h('button', { class: 'btn primary', text: 'Save', onclick: async () => { await save(input.value); m.close(); } })),
+        h('button', { class: 'btn primary', text: 'Save', onclick: go })),
     });
     requestAnimationFrame(() => { input.focus(); input.select(); });
   }
@@ -508,7 +525,7 @@
     const err = h('p', { class: 'b-err', hidden: true });
     const add = h('textarea', { class: 'field', id: 'rule-new', rows: '3', placeholder: 'A rule every terminal in this project must follow' });
     add.value = prefill;
-    const fail = (e) => { err.textContent = e.message || String(e); err.hidden = false; };
+    const fail = (e) => { err.textContent = errText(e); err.hidden = false; };
     const told = (n) => flash(n ? `Saved. ${n} running terminal${n === 1 ? '' : 's'} will be told at their next prompt.` : 'Saved. New terminals get it at launch.');
 
     async function load() {
@@ -733,7 +750,9 @@
         t.diffStat ? h('div', { class: 'b-stat' }, h('span', { class: 'add', text: `+${t.diffStat.added}` }), document.createTextNode(' '), h('span', { class: 'del', text: `−${t.diffStat.removed}` }), document.createTextNode(` in ${t.diffStat.files} file${t.diffStat.files === 1 ? '' : 's'}`)) : null,
         t.worktree.removed ? null : h('button', { class: 'mini', text: 'View diff', onclick: () => diffDialog(t.id) }))
         : sec('Git', h('div', { class: 'dim small', text: 'Runs in the project’s own folder.' })),
-      t.links && t.links.length ? sec('Links', ...t.links.map((u) => h('a', { class: 'td-link', href: u, target: '_blank', rel: 'noopener', text: u }))) : null,
+      t.links && t.links.length ? sec('Links', ...t.links.map((u) => (/^(https?:|mailto:)/i.test(u)
+        ? h('a', { class: 'td-link', href: u, target: '_blank', rel: 'noopener', text: u })
+        : h('div', { class: 'td-text mono', text: u })))) : null,
       sec('Rules', h('div', { class: 'td-text', text: document.querySelector('#session-rules').textContent || '' })),
       h('div', { class: 'td-actions' },
         h('button', { class: 'mini', text: 'Move…', onclick: () => moveDialog(t) }),
@@ -745,7 +764,7 @@
     drawerOpen = !drawerOpen;
     renderDrawer();
     const id = currentId();
-    if (id && panes.has(id)) requestAnimationFrame(() => panes.get(id).fit.fit());
+    refit(id);
   }
 
   /* ------------------------------------------------------------ planner */
@@ -770,7 +789,7 @@
     plannerId = null;
     document.querySelector('#main').classList.remove('planner-open');
     const id = currentId();
-    if (id && panes.has(id)) requestAnimationFrame(() => panes.get(id).fit.fit());
+    refit(id);
     if (visible) render();
   }
 
@@ -852,7 +871,10 @@
   // Ages on cards drift; refresh them once a minute while the board is open.
   setInterval(() => { if (visible) render(); }, 60000);
 
-  window.__board = { openPlanner, closePlanner, get plannerId() { return plannerId; }, updateChip, diffDialog, toggleDrawer, get drawerOpen() { return drawerOpen; }, rulesDialog, peek, closePeek, columnOf: (id) => { const t = snap.tasks.find((x) => x.id === id); return t ? columnOf(t) : null; }, toggle, show: () => setVisible(true), hide: () => setVisible(false), refresh, get visible() { return visible; }, select, start, move, nextNeeds };
+  /** A pane went away; if it was the planner, the board takes the whole width again. */
+  function paneClosed(id) { if (id && id === plannerId) closePlanner(); }
+
+  window.__board = { paneClosed, openPlanner, closePlanner, get plannerId() { return plannerId; }, updateChip, diffDialog, toggleDrawer, get drawerOpen() { return drawerOpen; }, rulesDialog, peek, closePeek, columnOf: (id) => { const t = snap.tasks.find((x) => x.id === id); return t ? columnOf(t) : null; }, toggle, show: () => setVisible(true), hide: () => setVisible(false), refresh, get visible() { return visible; }, select, start, move, nextNeeds };
 
   // Open on the board when there is work on it.
   H.boardGet().then((s) => { snap = s; if (s.tasks.length) setVisible(true); });

@@ -32,7 +32,8 @@ class TaskRunner extends EventEmitter {
 
   /** The task's live pane, if any (exited panes included, so the UI can show them). */
   paneOf(taskId) {
-    return this.ptys.list().find((s) => s.taskId === taskId) || null;
+    const mine = this.ptys.list().filter((s) => s.taskId === taskId);
+    return mine.find((s) => !s.exited) || mine[mine.length - 1] || null;
   }
 
   liveCounts(cwd) {

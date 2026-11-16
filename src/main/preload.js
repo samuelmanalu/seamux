@@ -97,6 +97,7 @@ contextBridge.exposeInMainWorld('seamux', {
   onProjectRules: (fn) => ipcRenderer.on('ui:projectRules', () => fn()),
   onBoardChanged: (fn) => ipcRenderer.on('board:changed', (_e, p) => fn(p)),
   onSessionCreated: (fn) => ipcRenderer.on('session:created', (_e, p) => fn(p)),
+  onSessionRemoved: (fn) => ipcRenderer.on('session:removed', (_e, p) => fn(p)),
   onNewSession: (fn) => ipcRenderer.on('ui:newSession', () => fn()),
   onOpenProject: (fn) => ipcRenderer.on('ui:openProject', (_e, p) => fn(p)),
 });

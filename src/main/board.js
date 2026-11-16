@@ -29,6 +29,14 @@ function clampLimit(n, fallback) {
   return Number.isFinite(v) && v >= 1 && v <= 50 ? v : fallback;
 }
 
+/** A limit the user typed: a whole number from 1 to 50, or an error. */
+function checkLimit(n) {
+  const s = String(n ?? '').trim();
+  const v = Number(s);
+  if (!s || !Number.isInteger(v) || v < 1 || v > 50) throw new Error('a limit must be a whole number between 1 and 50');
+  return v;
+}
+
 class Board {
   constructor(file) {
     this.file = file;
@@ -244,7 +252,7 @@ class Board {
   limitFor(cwd) { return clampLimit(this.data.limits[cwd], DEFAULT_PROJECT_LIMIT); }
 
   setLimit(cwd, n) {
-    this.data.limits[cwd] = clampLimit(n, DEFAULT_PROJECT_LIMIT);
+    this.data.limits[cwd] = checkLimit(n);
     this.save();
     return this.data.limits[cwd];
   }
@@ -252,7 +260,7 @@ class Board {
   globalLimit() { return clampLimit(this.data.globalLimit, DEFAULT_GLOBAL_LIMIT); }
 
   setGlobalLimit(n) {
-    this.data.globalLimit = clampLimit(n, DEFAULT_GLOBAL_LIMIT);
+    this.data.globalLimit = checkLimit(n);
     this.save();
     return this.data.globalLimit;
   }

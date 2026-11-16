@@ -125,6 +125,7 @@ function activate(id, { keepBoard = false } = {}) {
 
 async function closeSession(id) {
   await H.removeSession(id);
+  if (window.__board) window.__board.paneClosed(id);
   const pane = panes.get(id);
   if (pane) { pane.term.dispose(); pane.el.remove(); }
   panes.delete(id);
@@ -342,7 +343,7 @@ function toggleDebug() {
     refreshDebug();
     debugTimer = setInterval(refreshDebug, 500);
   }
-  if (activeId) requestAnimationFrame(() => panes.get(activeId).fit.fit());
+  if (activeId) { const id = activeId; requestAnimationFrame(() => { const p = panes.get(id); if (p) p.fit.fit(); }); }
 }
 
 /* --------------------------------------------------------------- artifacts */
@@ -406,7 +407,7 @@ function toggleArtifacts() {
   artifactsOn = !artifactsOn;
   el.artifacts.hidden = !artifactsOn;
   if (artifactsOn) refreshArtifacts();
-  if (activeId) requestAnimationFrame(() => panes.get(activeId).fit.fit());
+  if (activeId) { const id = activeId; requestAnimationFrame(() => { const p = panes.get(id); if (p) p.fit.fit(); }); }
 }
 
 /* -------------------------------------------------------------------- wire */
@@ -437,6 +438,18 @@ H.onExit(({ id }) => {
 
 // A board task started a terminal (possibly by itself, from the queue).
 H.onSessionCreated((meta) => { if (!panes.has(meta.id)) addPane(meta); });
+
+// Main removed a pane (a task's ended terminal making way for a new one).
+H.onSessionRemoved(({ id }) => {
+  const pane = panes.get(id);
+  if (!pane) return;
+  pane.term.dispose(); pane.el.remove();
+  panes.delete(id);
+  order = order.filter((x) => x !== id);
+  if (window.__board) window.__board.paneClosed(id);
+  if (activeId === id) { activeId = null; if (order.length) activate(order[order.length - 1], { keepBoard: true }); else { el.empty.hidden = false; renderCrumb(); } }
+  renderSessions();
+});
 
 H.onNewSession(newSession);
 H.onOpenProject(async ({ cwd, name }) => { await openProject(cwd, name); refreshProjects(); });

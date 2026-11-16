@@ -26,7 +26,8 @@ const r = spawnSync(require('electron'), ['.'], {
     PATH: `${stubDir}:${process.env.PATH}`,
     SHELL: '/bin/bash',
     SEAMUX_GEMINI_BIN: path.join(stubDir, 'gemini'),
-    SEAMUX_USER_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'seamux-ud-')),
+    // SEAMUX_KEEP_UD reuses one data folder across runs (the restart suite).
+    SEAMUX_USER_DATA: process.env.SEAMUX_KEEP_UD || fs.mkdtempSync(path.join(os.tmpdir(), 'seamux-ud-')),
     // Another suite can reuse these stubs: node scripts/run-board-e2e.js test/x.e2e.js
     SEAMUX_E2E: path.resolve(process.argv[2] || path.join(__dirname, '..', 'test', 'board.e2e.js')),
   },

@@ -10,6 +10,12 @@
   let state = null;
   let toastTimer = null;
 
+  // Errors from the main process arrive as "Error invoking remote method
+  // 'x': Error: <message>"; show only the message.
+  function errText(e) {
+    return String((e && e.message) || e).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+  }
+
   function h(tag, props = {}, ...kids) {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(props)) {
@@ -127,7 +133,7 @@
       const hdrs = type.value === 'http' && headers.value.trim() ? pairs(headers.value, ':') : null;
       return { config, headers: hdrs };
     }
-    const fail = (e) => { err.textContent = e.message || String(e); err.hidden = false; };
+    const fail = (e) => { err.textContent = errText(e); err.hidden = false; };
 
     async function saveOnly() { const r = read(); apply(await H.knowledgeSet(r.config, r.headers)); }
 

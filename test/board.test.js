@@ -70,13 +70,15 @@ ok('setStatus validates and stamps queue time', () => {
   assert.ok(q.queuedAt);
 });
 
-ok('limits clamp to 1..50 and fall back on nonsense', () => {
+ok('limits must be whole numbers from 1 to 50; anything else is refused', () => {
   const b = new Board(file);
   assert.strictEqual(b.setLimit('/p', 2), 2);
   assert.strictEqual(b.limitFor('/p'), 2);
-  assert.strictEqual(b.setLimit('/p', 0), DEFAULT_PROJECT_LIMIT);
-  assert.strictEqual(b.setLimit('/p', 'abc'), DEFAULT_PROJECT_LIMIT);
-  assert.strictEqual(b.setLimit('/p', 99), DEFAULT_PROJECT_LIMIT);
+  for (const bad of [0, -1, 51, 'abc', '', null, 2.5]) assert.throws(() => b.setLimit('/p', bad), /between 1 and 50/);
+  assert.strictEqual(b.limitFor('/p'), 2, 'a refused value changes nothing');
+  assert.strictEqual(b.setLimit('/p', ' 7 '), 7);
+  b.data.limits['/q'] = 'junk';   // a hand-edited file still reads safely
+  assert.strictEqual(b.limitFor('/q'), DEFAULT_PROJECT_LIMIT);
   assert.strictEqual(b.setGlobalLimit(4), 4);
   b.setLimit('/p', 2);
 });

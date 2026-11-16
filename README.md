@@ -399,6 +399,19 @@ window and asserts the badge tracks an actual turn:
 SEAMUX_LIVE_DIR=/some/project SEAMUX_E2E=$PWD/test/live-claude.js npx electron .
 ```
 
+### End-to-end campaign
+
+`npm run test:campaign` runs every scenario and edge case against the real
+window: three suites in parallel (each its own app and data folder), then a
+two-part restart that quits a busy board and checks what comes back.
+
+| Suite | Covers |
+|---|---|
+| lifecycle | limits and queue across projects, terminals ending by themselves, restarts, editing and deleting, drag and drop, keyboard edges, hostile and Unicode text, missing folders and agents, 200 tasks |
+| rules and knowledge | rule changes and notices, duplicates, plain sessions, promote; a knowledge server that crashes, finds nothing or fails; settings the dialog refuses; headers; agent access off |
+| worktrees, planner, hooks | no git or no commits, a worktree deleted by hand, parallel tasks in one repo, binary/deleted/renamed/large files in a diff; reopening and running two planners, seamux errors; hooks from plain, ended or unknown terminals |
+| restart | running, queued, waiting and blocked tasks, rules, limits and the knowledge server after quitting; resuming in the worktree; the seamux command on the new socket |
+
 ## Layout
 
 ```

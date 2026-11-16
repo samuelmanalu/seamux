@@ -142,6 +142,13 @@ class PtyManager extends EventEmitter {
     return this.describe(s);
   }
 
+  setTitle(id, title) {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    s.title = String(title);
+    return this.describe(s);
+  }
+
   /** Record which project rules this session has, and how they reached it. */
   setRulesInfo(id, { count, via, version }) {
     const s = this.sessions.get(id);
