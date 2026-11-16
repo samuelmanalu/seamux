@@ -58,6 +58,9 @@ class TaskRunner extends EventEmitter {
     if (pane && !pane.exited) return { status: 'already', pane };
     if (this.starting.has(taskId)) return { status: 'already' };
 
+    const blocked = this.board.blockedBy(taskId);
+    if (blocked.length) throw new Error(`it waits for ${blocked.map((b) => `“${b.title}”`).join(', ')} to be done`);
+
     const check = this.board.canStart(task.cwd, this.liveCounts(task.cwd));
     if (!check.ok) {
       this.board.setStatus(taskId, 'queued');

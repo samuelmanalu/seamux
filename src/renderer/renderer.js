@@ -99,13 +99,14 @@ function addPane(meta) {
   return panes.get(meta.id);
 }
 
-function activate(id) {
+function activate(id, { keepBoard = false } = {}) {
   const pane = panes.get(id);
   if (!pane) return;
 
   activeId = id;
-  // Opening a terminal leaves the board.
-  if (window.__board && window.__board.visible) window.__board.hide();
+  // Opening a terminal leaves the board, except for the planner, which sits
+  // beside it.
+  if (!keepBoard && window.__board && window.__board.visible) window.__board.hide();
   for (const [pid, p] of panes) p.el.classList.toggle('active', pid === id);
   el.empty.hidden = true;
 

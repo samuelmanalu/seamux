@@ -14,7 +14,7 @@ const crypto = require('crypto');
 const STATUSES = ['backlog', 'ready', 'queued', 'active', 'waiting', 'review', 'done'];
 const DEFAULT_PROJECT_LIMIT = 3;
 const DEFAULT_GLOBAL_LIMIT = 8;
-const EDITABLE = ['title', 'brief', 'agent', 'isolation', 'links'];
+const EDITABLE = ['title', 'brief', 'agent', 'isolation', 'links', 'dependsOn'];
 const ISOLATION = ['auto', 'worktree', 'main'];
 
 function now() { return new Date().toISOString(); }
@@ -57,7 +57,7 @@ class Board {
     return t ? { ...t } : null;
   }
 
-  create({ cwd, title, brief = '', agent = null, status = 'ready', isolation = 'auto', links = [] }) {
+  create({ cwd, title, brief = '', agent = null, status = 'ready', isolation = 'auto', links = [], dependsOn = [] }) {
     if (!cwd) throw new Error('a task needs a project');
     const clean = String(title || '').trim();
     if (!clean) throw new Error('a task needs a title');
@@ -74,11 +74,13 @@ class Board {
       worktree: null,                // { path, branch, base, runCwd, root } once created
       links: cleanLinks(links),      // MRs, tickets: anything worth a click
       diffStat: null,                // { files, added, removed } since the task started
+      dependsOn: [],                 // task ids that must be Done before this one starts
       createdAt: now(),
       updatedAt: now(),
       statusAt: now(),
       order: this._nextOrder(),
     };
+    t.dependsOn = this._checkDeps(t, dependsOn);
     this.data.tasks.push(t);
     this.save();
     return { ...t };
@@ -96,6 +98,8 @@ class Board {
         t.brief = String(patch.brief || '').trim();
       } else if (k === 'links') {
         t.links = cleanLinks(patch.links);
+      } else if (k === 'dependsOn') {
+        t.dependsOn = this._checkDeps(t, patch.dependsOn);
       } else if (k === 'isolation') {
         if (!ISOLATION.includes(patch.isolation)) throw new Error(`unknown isolation: ${patch.isolation}`);
         // Where a task runs is fixed once it has run: its conversation and
@@ -172,7 +176,18 @@ class Board {
 
   remove(id) {
     this.data.tasks = this.data.tasks.filter((t) => t.id !== id);
+    // Nothing may wait on a task that no longer exists.
+    for (const t of this.data.tasks) if (t.dependsOn) t.dependsOn = t.dependsOn.filter((d) => d !== id);
     this.save();
+  }
+
+  /** The tasks this one still waits for (not Done yet). */
+  blockedBy(id) {
+    const t = this._find(id);
+    return (t.dependsOn || [])
+      .map((d) => this.data.tasks.find((x) => x.id === d))
+      .filter((d) => d && d.status !== 'done')
+      .map((d) => ({ id: d.id, title: d.title, status: d.status }));
   }
 
   /** Forget every task of a project that is no longer on the board. */
@@ -285,6 +300,29 @@ class Board {
     const t = this.data.tasks.find((x) => x.id === id);
     if (!t) throw new Error(`no such task: ${id}`);
     return t;
+  }
+
+  /** Dependencies must be other tasks of the same project, with no loop. */
+  _checkDeps(task, deps) {
+    const ids = [...new Set((Array.isArray(deps) ? deps : []).map(String).filter(Boolean))];
+    for (const d of ids) {
+      if (d === task.id) throw new Error('a task cannot depend on itself');
+      const other = this.data.tasks.find((x) => x.id === d);
+      if (!other) throw new Error(`no such task: ${d}`);
+      if (other.cwd !== task.cwd) throw new Error('a task can only depend on tasks of its own project');
+    }
+    // Walk the graph from each dependency; reaching this task again is a loop.
+    const seen = new Set();
+    const stack = [...ids];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (cur === task.id) throw new Error('that would make tasks wait on each other in a loop');
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      const c = this.data.tasks.find((x) => x.id === cur);
+      if (c && c.dependsOn) stack.push(...c.dependsOn);
+    }
+    return ids;
   }
 
   _nextOrder() {

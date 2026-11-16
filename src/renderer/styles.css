@@ -694,3 +694,10 @@ textarea.field { resize: vertical; min-height: 130px; line-height: 1.5; }
 .td-link { color: var(--accent); overflow-wrap: anywhere; font-size: 12px; }
 .td-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
 .td-actions .mini, .td-sec .mini { margin-left: 0; align-self: flex-start; }
+
+/* ---------- planner ---------- */
+#main.planner-open #boardview { right: 45%; border-right: 1px solid var(--line); }
+#main.planner-open #terminals { margin-left: 55%; }
+.b-deps { display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; padding-top: 6px; }
+.mini.disabled { opacity: .4; cursor: not-allowed; }
+.mini.disabled:hover { color: var(--fg-dim); border-color: var(--line); }

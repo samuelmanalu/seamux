@@ -187,5 +187,22 @@ ok('isolation, links and worktree fields', () => {
   assert.deepStrictEqual(b.update(t.id, { links: ['https://y'] }).links, ['https://y']);
 });
 
+ok('dependencies: same project, no self, no loops, blockedBy until done', () => {
+  const b = new Board(file);
+  const a = b.create({ cwd: '/d', title: 'A' });
+  const c = b.create({ cwd: '/d', title: 'C', dependsOn: [a.id] });
+  assert.deepStrictEqual(c.dependsOn, [a.id]);
+  assert.deepStrictEqual(b.blockedBy(c.id).map((x) => x.title), ['A']);
+  assert.throws(() => b.update(a.id, { dependsOn: [c.id] }), /loop/);
+  assert.throws(() => b.update(a.id, { dependsOn: [a.id] }), /itself/);
+  const other = b.create({ cwd: '/elsewhere', title: 'O' });
+  assert.throws(() => b.update(c.id, { dependsOn: [other.id] }), /own project/);
+  assert.throws(() => b.create({ cwd: '/d', title: 'X', dependsOn: ['t_nope'] }), /no such task/);
+  b.setStatus(a.id, 'done');
+  assert.deepStrictEqual(b.blockedBy(c.id), []);
+  b.remove(a.id);
+  assert.deepStrictEqual(b.get(c.id).dependsOn, [], 'a deleted task is dropped from dependencies');
+});
+
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`BOARD: ALL ${results} PASSED`);

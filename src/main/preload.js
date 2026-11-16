@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('seamux', {
   boardSetGlobalLimit: (limit) => ipcRenderer.invoke('board:setGlobalLimit', limit),
   boardWait: (id, waitingFor) => ipcRenderer.invoke('board:wait', { id, waitingFor }),
   boardDiff: (id) => ipcRenderer.invoke('board:diff', id),
+  boardOpenPlanner: (cwd) => ipcRenderer.invoke('board:openPlanner', cwd),
   boardRemoveWorktree: (id) => ipcRenderer.invoke('board:removeWorktree', id),
   rulesList: (cwd) => ipcRenderer.invoke('rules:list', cwd),
   knowledgeGet: () => ipcRenderer.invoke('knowledge:get'),

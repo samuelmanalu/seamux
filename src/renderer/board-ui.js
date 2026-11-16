@@ -82,6 +82,9 @@
   }
 
   function nextLine(task, ps) {
+    if (task.blockedBy && task.blockedBy.length && !ps && task.status !== 'done') {
+      return ['Waits for', task.blockedBy.map((b) => b.title).join(', ')];
+    }
     if (task.status === 'queued') return ['Waiting', 'a free slot'];
     if (task.status === 'waiting') return ['Waiting', `${task.waitingFor || 'someone else'} · ${age(task.statusAt)}`];
     if (ps) {
@@ -144,6 +147,7 @@
         h('div', { class: 'b-lanesub', text: `backlog ${backlog} · done ${done}` }),
         h('div', { class: 'b-lanebtns' },
           h('button', { class: 'mini', text: '+ Task', onclick: () => taskDialog({ cwd: p.cwd }) }),
+          h('button', { class: 'mini', text: 'Plan', title: 'Open this project’s planner beside the board (P)', onclick: () => openPlanner(p.cwd) }),
           h('button', {
             class: 'mini' + (p.ruleCount ? ' on' : ''),
             text: p.ruleCount ? `Rules ${p.ruleCount}` : 'Rules',
@@ -182,6 +186,7 @@
         onclick: editGlobalLimit,
       }),
       h('span', { class: 'spacer' }),
+      plannerId && panes.has(plannerId) ? h('button', { class: 'mini on', text: `${panes.get(plannerId).meta.title} · Hide`, title: 'Hide the planner (it keeps running)', onclick: closePlanner }) : null,
       ...['backlog', 'done'].map((id) => h('button', {
         class: 'mini' + (shown[id] ? ' on' : ''),
         text: id === 'backlog' ? 'Backlog' : 'Done',
@@ -229,11 +234,13 @@
       row.append(h('button', { class: 'mini', text: 'Open', onclick: (e) => { e.stopPropagation(); open(t.id); } }));
     } else if (t.status !== 'queued') {
       const resume = !!t.sessionId;
+      const blocked = t.blockedBy && t.blockedBy.length;
       row.append(h('button', {
-        class: 'mini',
+        class: 'mini' + (blocked ? ' disabled' : ''),
         text: resume ? 'Resume' : 'Start',
-        title: resume ? 'Start its terminal and continue the same conversation' : 'Start a terminal for this task (S)',
-        onclick: (e) => { e.stopPropagation(); start(t.id); },
+        title: blocked ? `Waits for ${t.blockedBy.map((b) => b.title).join(', ')}`
+          : resume ? 'Start its terminal and continue the same conversation' : 'Start a terminal for this task (S)',
+        onclick: (e) => { e.stopPropagation(); if (!blocked) start(t.id); },
       }));
     }
     if (t.worktree && !t.worktree.removed) {
@@ -253,6 +260,7 @@
 
   function setVisible(on) {
     if (!on && peekId) closePeek();
+    if (!on && plannerId) { plannerId = null; document.querySelector('#main').classList.remove('planner-open'); }
     visible = on;
     root.hidden = !on;
     toggleBtn.classList.toggle('on', on);
@@ -359,6 +367,19 @@
     if (fixed) isolation.disabled = true;
     const links = h('textarea', { class: 'field', id: 'task-links', rows: '2', placeholder: 'MRs, tickets, docs: one link per line' });
     links.value = (task.links || []).join('\n');
+    // Other tasks of the chosen project this one waits for.
+    const deps = h('div', { class: 'b-deps', id: 'task-deps' });
+    const chosenDeps = new Set(task.dependsOn || []);
+    const renderDeps = () => {
+      const others = snap.tasks.filter((x) => x.cwd === project.value && x.id !== task.id);
+      deps.replaceChildren(...(others.length ? others.map((x) => {
+        const cb = h('input', { type: 'checkbox', 'data-dep': x.id });
+        cb.checked = chosenDeps.has(x.id);
+        cb.onchange = () => { if (cb.checked) chosenDeps.add(x.id); else chosenDeps.delete(x.id); };
+        return h('label', { class: 'kn-check' }, cb, document.createTextNode(` ${x.title}`), h('span', { class: 'dim small', text: ` · ${x.status}` }));
+      }) : [h('span', { class: 'dim small', text: 'No other tasks in this project.' })]));
+    };
+    renderDeps();
     const where = task.worktree
       ? h('div', { class: 'b-where' },
         h('span', { class: 'mono', text: task.worktree.branch }),
@@ -373,10 +394,15 @@
       h('label', { text: 'Runs in' }), h('div', { class: 'b-stack' }, isolation,
         fixed ? h('span', { class: 'dim small', text: 'Fixed once a task has started: its conversation and changes live there.' }) : null, where),
       h('label', { text: 'Links' }), links,
+      h('label', { text: 'Depends on' }), deps,
       err);
 
-    project.onchange = () => { agent.options[0].textContent = defaultAgent(projects.find((p) => p.cwd === project.value)); };
-    const read = () => ({ cwd: project.value, title: title.value, brief: brief.value, agent: agent.value || null, links: links.value, ...(fixed ? {} : { isolation: isolation.value }) });
+    project.onchange = () => {
+      agent.options[0].textContent = defaultAgent(projects.find((p) => p.cwd === project.value));
+      chosenDeps.clear();
+      renderDeps();
+    };
+    const read = () => ({ cwd: project.value, title: title.value, brief: brief.value, agent: agent.value || null, links: links.value, dependsOn: [...chosenDeps], ...(fixed ? {} : { isolation: isolation.value }) });
     const fail = (e) => { err.textContent = e.message || String(e); err.hidden = false; };
 
     const buttons = [h('button', { class: 'btn', text: 'Cancel', onclick: () => m.close() })];
@@ -404,7 +430,7 @@
         h('button', { class: 'btn primary', text: 'Save', onclick: async () => {
           try {
             const r = read();
-            await H.boardUpdate(task.id, { title: r.title, brief: r.brief, agent: r.agent, links: r.links, ...(r.isolation ? { isolation: r.isolation } : {}) });
+            await H.boardUpdate(task.id, { title: r.title, brief: r.brief, agent: r.agent, links: r.links, dependsOn: r.dependsOn, ...(r.isolation ? { isolation: r.isolation } : {}) });
             m.close();
           } catch (e) { fail(e); }
         } }));
@@ -722,6 +748,32 @@
     if (id && panes.has(id)) requestAnimationFrame(() => panes.get(id).fit.fit());
   }
 
+  /* ------------------------------------------------------------ planner */
+
+  // The project's planner sits to the right of the board; cards it creates
+  // appear in Backlog as it goes.
+  let plannerId = null;
+
+  async function openPlanner(cwd) {
+    if (!cwd) { flash('Pick a project first.'); return; }
+    const meta = await H.boardOpenPlanner(cwd);
+    if (!panes.has(meta.id)) addPane(meta);
+    plannerId = meta.id;
+    if (!visible) setVisible(true);
+    document.querySelector('#main').classList.add('planner-open');
+    activate(meta.id, { keepBoard: true });
+    render();
+    requestAnimationFrame(() => { const p = panes.get(meta.id); if (p) { p.fit.fit(); p.term.focus(); } });
+  }
+
+  function closePlanner() {
+    plannerId = null;
+    document.querySelector('#main').classList.remove('planner-open');
+    const id = currentId();
+    if (id && panes.has(id)) requestAnimationFrame(() => panes.get(id).fit.fit());
+    if (visible) render();
+  }
+
   /* ------------------------------------------------------------ keyboard */
 
   function grid() {
@@ -757,6 +809,7 @@
       m: () => t && moveDialog(t),
       e: () => t && taskDialog(t),
       n: () => taskDialog(t ? { cwd: t.cwd } : {}),
+      p: () => openPlanner(t ? t.cwd : (snap.projects[0] || {}).cwd),
     };
     const fn = keys[e.key];
     if (fn) { e.preventDefault(); fn(); }
@@ -799,7 +852,7 @@
   // Ages on cards drift; refresh them once a minute while the board is open.
   setInterval(() => { if (visible) render(); }, 60000);
 
-  window.__board = { updateChip, diffDialog, toggleDrawer, get drawerOpen() { return drawerOpen; }, rulesDialog, peek, closePeek, columnOf: (id) => { const t = snap.tasks.find((x) => x.id === id); return t ? columnOf(t) : null; }, toggle, show: () => setVisible(true), hide: () => setVisible(false), refresh, get visible() { return visible; }, select, start, move, nextNeeds };
+  window.__board = { openPlanner, closePlanner, get plannerId() { return plannerId; }, updateChip, diffDialog, toggleDrawer, get drawerOpen() { return drawerOpen; }, rulesDialog, peek, closePeek, columnOf: (id) => { const t = snap.tasks.find((x) => x.id === id); return t ? columnOf(t) : null; }, toggle, show: () => setVisible(true), hide: () => setVisible(false), refresh, get visible() { return visible; }, select, start, move, nextNeeds };
 
   // Open on the board when there is work on it.
   H.boardGet().then((s) => { snap = s; if (s.tasks.length) setVisible(true); });

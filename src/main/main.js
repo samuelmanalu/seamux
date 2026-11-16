@@ -15,6 +15,7 @@ const { KnowledgeClient, EXAMPLES: KNOWLEDGE_EXAMPLES } = require('./knowledge')
 const { Board, openingPrompt, rulesText } = require('./board');
 const { extractNextStep } = require('./next-step');
 const worktrees = require('./worktree');
+const { ControlServer } = require('./control');
 const { TaskRunner } = require('./task-runner');
 
 // Tests must never write into the real user's config. Set before anything
@@ -40,6 +41,8 @@ let general = null;
 let board = null;
 let runner = null;
 let knowledge = null;
+let control = null;
+let controlSocket = null;
 let activeSessionId = null;
 
 /**
@@ -372,11 +375,17 @@ async function createSession(o) {
   const resume = !!o.resumeSessionId;
   const sessionId = resume ? o.resumeSessionId : newAgentSessionId(profile);
   const rules = projectRules(o.cwd, profile, { resume });
+  // The planner's standing instructions travel like rules: system prompt
+  // where the agent has one, otherwise the opening message.
+  const plan = o.planner ? plannerText(o.cwd) : null;
+  if (plan && profile.instructions.mode === 'flag') rules.instructions.push(plan);
+  else if (plan && !resume) rules.prompts.push(plan);
   const prompts = resume ? [] : [...rules.prompts, ...prePrompts, ...(o.taskPrompts || [])];
   const mcpConfig = profile.id === 'claude' && profiles.commandFor(profile) === 'claude' ? knowledgeMcpFile() : null;
   const { resumeSessionId, taskPrompts, runCwd, ...rest } = o;
   return ptys.create({
     ...rest,
+    extraEnv: paneEnv(o.cwd),
     cwd: runCwd || o.cwd,
     projectCwd: o.cwd,
     projectRuleCount: rules.count, rulesVia: rules.via, rulesVersion: rules.version,
@@ -392,6 +401,85 @@ async function createSession(o) {
       ? [`${profile.label} has no way to take ${dropped.join(' or ')} — that part of the context was not applied.`]
       : [])],
   });
+}
+
+/**
+ * Seamux's own variables in every terminal: where the control socket is,
+ * which project the terminal belongs to, and the seamux command on PATH.
+ */
+function paneEnv(projectCwd) {
+  if (!controlSocket) return {};
+  return {
+    SEAMUX_SOCKET: controlSocket,
+    SEAMUX_PROJECT: projectCwd || '',
+    PATH: `${path.join(app.getPath('userData'), 'bin')}:${process.env.PATH || ''}`,
+  };
+}
+
+/** What the project's planner is for, and how it puts tasks on the board. */
+function plannerText(cwd) {
+  const name = projectName(cwd);
+  return [
+    `You are the planner for the project ${name} in Seamux, a board where every task gets its own terminal and agent.`,
+    'Your job is to help the user turn goals into a clear plan of tasks on that board. Do not write or change code yourself.',
+    'Add each task with the seamux command, for example:',
+    '  seamux task add "Short title" --brief "What to do, and how to tell it is done" --after <id of a task it needs first>',
+    'Keep titles short. Give every brief its acceptance criteria. Use --after (repeatable) when a task needs another one done first.',
+    'See the current board with: seamux task list',
+    'New tasks land in Backlog; the user reviews them and moves them to Ready. Before adding more than five tasks at once, show the plan and ask.',
+  ].join('\n');
+}
+
+/** The control socket: how the seamux command reaches the board. */
+async function wireControl() {
+  const fs = require('fs');
+  const os = require('os');
+  const ud = app.getPath('userData');
+  // A Unix socket path must stay short (about 104 bytes on macOS).
+  let sock = path.join(ud, 'seamux.sock');
+  if (sock.length > 100) sock = path.join(os.tmpdir(), `seamux-${process.getuid ? process.getuid() : 'u'}.sock`);
+
+  const COLUMN = { backlog: 'Backlog', ready: 'Ready', queued: 'Queued', active: 'In progress', waiting: 'Waiting on others', review: 'Review', done: 'Done' };
+  const knownProject = (cwd) => store.projects().some((p) => p.cwd === cwd) || board.list().some((t) => t.cwd === cwd);
+  control = new ControlServer({
+    socketPath: sock,
+    handle: async (req) => {
+      const project = req.project ? path.resolve(String(req.project)) : '';
+      if (!project || !knownProject(project)) throw new Error(`not a project on the Seamux board: ${project || '(none)'}`);
+      if (req.cmd === 'task.add') {
+        const t = board.create({
+          cwd: project, title: req.title, brief: req.brief || '', agent: req.agent || null,
+          status: 'backlog', dependsOn: Array.isArray(req.after) ? req.after : [],
+        });
+        runner.emit('changed');
+        return { task: { id: t.id, title: t.title, status: t.status } };
+      }
+      if (req.cmd === 'task.list') {
+        return {
+          tasks: board.list().filter((t) => t.cwd === project).sort((a, b) => (a.order || 0) - (b.order || 0)).map((t) => ({
+            id: t.id, title: t.title, column: COLUMN[t.status] || t.status, blockedBy: board.blockedBy(t.id).map((x) => x.id),
+          })),
+        };
+      }
+      throw new Error(`unknown request: ${req.cmd}`);
+    },
+  });
+  try {
+    controlSocket = await control.start();
+  } catch (err) {
+    console.error('control socket failed:', err.message);
+    controlSocket = null;
+    return;
+  }
+
+  // The launcher: Electron itself runs the command as Node, so it works the
+  // same from a packaged app, whose code sits in an archive a shell cannot run.
+  const bin = path.join(ud, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+  fs.writeFileSync(path.join(bin, 'seamux'),
+    `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${q(process.execPath)} ${q(path.join(__dirname, '..', 'cli', 'seamux-cli.js'))} "$@"\n`,
+    { mode: 0o755 });
 }
 
 /**
@@ -605,6 +693,7 @@ function boardSnapshot() {
     const pane = panes.find((s) => s.taskId === t.id);
     return {
       ...t,
+      blockedBy: board.blockedBy(t.id),
       pane: pane ? {
         id: pane.id, state: pane.state, reason: pane.reason, exited: !!pane.exited,
         projectRuleCount: pane.projectRuleCount, rulesVia: pane.rulesVia, rulesVersion: pane.rulesVersion,
@@ -668,6 +757,14 @@ function wireBoard() {
   });
 
   ipcMain.handle('board:get', () => boardSnapshot());
+  // One planner per project. Not a task: it does not count toward the limit.
+  ipcMain.handle('board:openPlanner', async (_e, cwd) => {
+    const live = ptys.list().find((s) => s.planner && !s.exited && (s.projectCwd || s.cwd) === cwd);
+    if (live) return live;
+    const meta = await createSession({ cwd, title: `Plan · ${projectName(cwd)}`, planner: true });
+    send('session:created', meta);
+    return meta;
+  });
   ipcMain.handle('board:wait', (_e, { id, waitingFor }) => {
     const t = board.setWaiting(id, waitingFor);
     runner.emit('changed');
@@ -1010,7 +1107,7 @@ function wireIpc() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   store = new Store(path.join(app.getPath('userData'), 'seamux.json'));
   secrets = new SecretStore(path.join(app.getPath('userData'), 'seamux-secrets.json'));
   envs = new EnvManager(secrets);
@@ -1018,6 +1115,7 @@ app.whenReady().then(() => {
   wirePtys();
   wireBoard();
   wireKnowledge();
+  await wireControl();
   wireIpc();
   buildMenu();
   createWindow();
@@ -1048,4 +1146,5 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   if (ptys) ptys.dispose();
   if (knowledge) knowledge.close();
+  if (control) control.stop();
 });

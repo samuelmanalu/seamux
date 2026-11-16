@@ -118,6 +118,27 @@ see what every terminal is for and what comes next.
   start, **E** edit, **N** new task, **⌘J** jump to the next terminal that needs
   you. Backlog and Done are hidden until you turn them on.
 
+### Planning
+
+**Plan** in a project's lane (or **P**) opens the project's **planner**: a
+terminal beside the board whose agent is told to turn goals into tasks rather
+than write code. It is not a task and does not count toward the project's
+limit; there is one per project.
+
+The planner adds cards with the `seamux` command, which every Seamux terminal
+has on its PATH:
+
+```
+seamux task add "Write the deploy guide" --brief "Cover rollback too" --after t_1a2b3c4d5e
+seamux task list
+```
+
+New cards land in **Backlog** for you to review, and appear on the board as
+they are made. `--after` makes a task wait for another: until that one is
+Done, its card says what it waits for and it cannot start. Dependencies can
+also be set in a task's Edit dialog. The command talks to the app over an
+owner-only socket in Seamux's data folder.
+
 ### Worktrees and review
 
 When a project allows more than one terminal at once and is in git, each task

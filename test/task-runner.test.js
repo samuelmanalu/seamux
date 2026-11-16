@@ -160,6 +160,17 @@ test('a failed spawn puts the task back in Ready', async () => {
   assert.strictEqual(board.get(t.id).status, 'ready');
 });
 
+test('a task waiting for another is not started', async () => {
+  const { board, runner, spawned } = setup();
+  const a = board.create({ cwd: '/p', title: 'First' });
+  const b = board.create({ cwd: '/p', title: 'Second', dependsOn: [a.id] });
+  await assert.rejects(runner.start(b.id), /waits for “First”/);
+  assert.strictEqual(board.get(b.id).status, 'ready');
+  board.setStatus(a.id, 'done');
+  assert.strictEqual((await runner.start(b.id)).status, 'started');
+  assert.deepStrictEqual(spawned, ['Second']);
+});
+
 test('emits changed and started events', async () => {
   const { board, runner } = setup();
   const seen = [];

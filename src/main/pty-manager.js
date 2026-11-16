@@ -159,6 +159,9 @@ class PtyManager extends EventEmitter {
         COLORTERM: 'truecolor',
         // Claude Code (and most TUIs) behave badly if they think they're piped.
         FORCE_COLOR: '1',
+        // Seamux's own variables (the control socket, the seamux command on
+        // PATH). Not context: they are not listed as the session's values.
+        ...(opts.extraEnv || {}),
         // Resolved context last, so a set can deliberately override something
         // inherited from the shell that launched Seamux.
         ...(opts.env || {}),
@@ -215,6 +218,8 @@ class PtyManager extends EventEmitter {
       agentSessionId: opts.agentSessionId || null,
       // The board task this pane belongs to, if it was started from a card.
       taskId: opts.taskId || null,
+      // The project's planner: a terminal for planning, not a task.
+      planner: !!opts.planner,
       // The project this pane belongs to. Usually its folder; a task running
       // in its own worktree still belongs to the project it came from.
       projectCwd: opts.projectCwd || cwd,
@@ -229,6 +234,7 @@ class PtyManager extends EventEmitter {
       // What the process was actually launched with, so we can tell whether a
       // later change genuinely needs a restart or is already live in the file.
       spawnEnv: { ...(opts.env || {}) },
+      extraEnv: { ...(opts.extraEnv || {}) },
       contextPending: false,
       command,
       args,
@@ -364,6 +370,7 @@ class PtyManager extends EventEmitter {
       env: {
         ...cleanParentEnv(),
         TERM: 'xterm-256color', COLORTERM: 'truecolor', FORCE_COLOR: '1',
+        ...(s.extraEnv || {}),
         ...nextVars,
         SEAMUX_CONTEXT_FILE: s.contextFile,
         SEAMUX_SESSION_ID: s.id,
@@ -437,6 +444,7 @@ class PtyManager extends EventEmitter {
       rulesVia: s.rulesVia || 'none',
       rulesVersion: s.rulesVersion || null,
       projectCwd: s.projectCwd || s.cwd,
+      planner: !!s.planner,
     };
   }
 
