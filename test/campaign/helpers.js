@@ -68,14 +68,17 @@ function harness({ win, ptys, app, board }, name) {
       if (p) await js(`closeSession(${S(p.id)})`);
       await sleep(400);
     },
-    /** End the suite: print, clean up, exit. */
-    async finish() {
+    /**
+     * End the suite: print, clean up, exit. With quit, leave the way a user
+     * does (app.quit runs the quit handlers; app.exit skips them).
+     */
+    async finish({ quit = false } = {}) {
       h.check('no renderer console errors', consoleErrors.length === 0, consoleErrors.join(' | '));
       console.log(`===== ${name} =====`);
       console.log(results.join('\n'));
       console.log(fails ? `${fails} of ${results.length} FAILED` : `ALL ${results.length} PASSED`);
       for (const d of tmpRoots) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* gone */ } }
-      app.exit(fails ? 1 : 0);
+      if (quit && !fails) app.quit(); else app.exit(fails ? 1 : 0);
     },
     async section(title, fn) {
       try { await fn(); } catch (e) { h.check(`${title}: ran without throwing`, false, e.stack || e.message); }

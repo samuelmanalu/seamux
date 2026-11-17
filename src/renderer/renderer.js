@@ -102,6 +102,8 @@ function addPane(meta) {
 function activate(id, { keepBoard = false } = {}) {
   const pane = panes.get(id);
   if (!pane) return;
+  // In focus, only the focused terminal may come to the front.
+  if (window.__focus && !window.__focus.allows(id)) return;
 
   activeId = id;
   // Opening a terminal leaves the board, except for the planner, which sits

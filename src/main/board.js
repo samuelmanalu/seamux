@@ -16,6 +16,12 @@ const DEFAULT_PROJECT_LIMIT = 3;
 const DEFAULT_GLOBAL_LIMIT = 8;
 const EDITABLE = ['title', 'brief', 'agent', 'isolation', 'links', 'dependsOn'];
 const ISOLATION = ['auto', 'worktree', 'main'];
+// Time a task has spent, in milliseconds, by who it was waiting on:
+// agent     its agent was working
+// you       you had its terminal in front of you
+// needsYou  its agent was blocked on your answer
+// waiting   it sat in Waiting on others
+const TIME_BUCKETS = ['agent', 'you', 'needsYou', 'waiting'];
 
 function now() { return new Date().toISOString(); }
 
@@ -50,6 +56,7 @@ class Board {
   }
 
   save() {
+    this.dirty = false;
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
@@ -178,6 +185,36 @@ class Board {
     const t = this._find(id);
     t.sessionId = sessionId || null;
     t.updatedAt = now();
+    this.save();
+    return { ...t };
+  }
+
+  /**
+   * Add time to one of a task's buckets. Held in memory: time ticks every few
+   * seconds, so it reaches the disk with the next save or flush().
+   */
+  addTime(id, bucket, ms) {
+    if (!TIME_BUCKETS.includes(bucket)) throw new Error(`unknown time bucket: ${bucket}`);
+    const t = this.data.tasks.find((x) => x.id === id);
+    const add = Math.round(Number(ms));
+    if (!t || !Number.isFinite(add) || add <= 0) return;
+    if (!t.time) t.time = {};
+    t.time[bucket] = (t.time[bucket] || 0) + add;
+    this.dirty = true;
+  }
+
+  /** Write held time to disk, if there is any. */
+  flush() { if (this.dirty) this.save(); }
+
+  /** A focus session on this task ended: count it and its length. */
+  addFocusSession(id, { startedAt, endedAt, completed }) {
+    const t = this._find(id);
+    const ms = Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)) || 0;
+    const f = t.focus || (t.focus = { sessions: 0, completed: 0, ms: 0, lastAt: null });
+    f.sessions += 1;
+    if (completed) f.completed += 1;
+    f.ms += ms;
+    f.lastAt = endedAt;
     this.save();
     return { ...t };
   }
@@ -355,5 +392,5 @@ function openingPrompt(task) {
 }
 
 module.exports = {
-  Board, STATUSES, ISOLATION, openingPrompt, rulesText, DEFAULT_PROJECT_LIMIT, DEFAULT_GLOBAL_LIMIT,
+  Board, STATUSES, ISOLATION, TIME_BUCKETS, openingPrompt, rulesText, DEFAULT_PROJECT_LIMIT, DEFAULT_GLOBAL_LIMIT,
 };

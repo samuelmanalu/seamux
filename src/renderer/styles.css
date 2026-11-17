@@ -685,7 +685,7 @@ textarea.field { resize: vertical; min-height: 130px; line-height: 1.5; }
   background: var(--bg-2); border-left: 1px solid var(--line);
   padding: 12px 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
 }
-#main.drawer-open #terminals { margin-right: 300px; }
+#main.drawer-open #terminals, #main.drawer-open #focusbar { margin-right: 300px; }
 .td-head { display: flex; align-items: flex-start; gap: 8px; }
 .td-head strong { flex: 1; line-height: 1.3; }
 .td-sec { display: flex; flex-direction: column; gap: 4px; }
@@ -701,3 +701,29 @@ textarea.field { resize: vertical; min-height: 130px; line-height: 1.5; }
 .b-deps { display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; padding-top: 6px; }
 .mini.disabled { opacity: .4; cursor: not-allowed; }
 .mini.disabled:hover { color: var(--fg-dim); border-color: var(--line); }
+
+/* ---------- time and focus ---------- */
+.b-time { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--fg-dim); }
+.b-time.warn { color: var(--needs); }
+.td-time { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+.td-time b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.td-time[data-bucket="needsYou"] b { color: var(--needs); }
+
+#focusbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 14px; font-size: 12.5px;
+  background: rgba(122,162,247,.1);
+  border-bottom: 1px solid rgba(122,162,247,.35);
+}
+#focusbar .spacer { flex: 1; }
+#focusbar .f-label { font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--accent); }
+#focusbar .f-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#focusbar .f-clock { font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; color: var(--accent); }
+#focusbar .f-held { color: var(--needs); font-size: 12px; }
+#focusbar .mini { margin-left: 0; }
+/* In focus the sidebar and the board step aside. */
+body.focus-mode #sidebar, body.focus-mode #toggle-board { display: none; }
+.f-body { display: flex; flex-direction: column; gap: 8px; }
+.f-choices { display: flex; gap: 6px; }
+.f-choices .mini { margin-left: 0; }
+.f-choices .mini.on { border-color: var(--accent); color: var(--accent); }

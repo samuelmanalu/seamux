@@ -50,6 +50,24 @@
     requestAnimationFrame(() => { const p = panes.get(id); if (p) p.fit.fit(); });
   }
 
+  /** A length of time, short: "<1m", "12m", "1h 20m", "2d 3h". */
+  function dur(ms) {
+    const m = Math.floor((ms || 0) / 60000);
+    if (m < 1) return '<1m';
+    if (m < 60) return `${m}m`;
+    const hrs = Math.floor(m / 60);
+    if (hrs < 24) return `${hrs}h${m % 60 ? ` ${m % 60}m` : ''}`;
+    return `${Math.floor(hrs / 24)}d${hrs % 24 ? ` ${hrs % 24}h` : ''}`;
+  }
+
+  const TIME_LABELS = [['agent', 'Agent working'], ['you', 'You on it'], ['needsYou', 'Blocked on you'], ['waiting', 'Waiting on others']];
+
+  /** One line per time bucket that has any time in it. */
+  function timeLines(t) {
+    const tm = t.time || {};
+    return TIME_LABELS.filter(([k]) => tm[k] >= 60000).map(([k, label]) => [k, label, dur(tm[k])]);
+  }
+
   function errText(e) {
     return String((e && e.message) || e).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
   }
@@ -229,6 +247,7 @@
         h('span', { class: 'b-agent', text: agentLabel(t) }),
         t.diffStat && t.diffStat.files ? h('span', { class: 'b-stat', title: `${t.diffStat.files} file${t.diffStat.files === 1 ? '' : 's'} changed` },
           h('span', { class: 'add', text: `+${t.diffStat.added}` }), document.createTextNode(' '), h('span', { class: 'del', text: `−${t.diffStat.removed}` })) : null,
+        timeChip(t),
         h('span', { class: 'b-age', text: age(t.statusAt) })),
       line ? h('div', { class: 'b-next' }, h('b', { text: `${line[0]}: ` }), document.createTextNode(line[1])) : null,
       actions(t, ps));
@@ -237,6 +256,20 @@
     el.ondragstart = (e) => { dragging = t; e.dataTransfer.setData('text/plain', t.id); el.classList.add('dragging'); };
     el.ondragend = () => { dragging = null; el.classList.remove('dragging'); };
     return el;
+  }
+
+  /** Time worked on a task (agent and you), with the full split on hover. */
+  function timeChip(t) {
+    const lines = timeLines(t);
+    if (!lines.length) return null;
+    const tm = t.time || {};
+    const worked = (tm.agent || 0) + (tm.you || 0);
+    const blocked = tm.needsYou || 0;
+    return h('span', {
+      class: 'b-time' + (blocked >= 15 * 60000 && blocked > worked / 2 ? ' warn' : ''),
+      title: lines.map(([, label, d]) => `${label}: ${d}`).join('\n'),
+      text: `⏱ ${dur(worked)}`,
+    });
   }
 
   function actions(t, ps) {
@@ -271,6 +304,7 @@
   }
 
   function setVisible(on) {
+    if (on && window.__focus && window.__focus.current) { window.__focus.blocked(); return; }
     if (!on && peekId) closePeek();
     if (!on && plannerId) { plannerId = null; document.querySelector('#main').classList.remove('planner-open'); }
     visible = on;
@@ -278,7 +312,11 @@
     toggleBtn.classList.toggle('on', on);
     if (on) { refresh(); root.focus(); }
     else refit(currentId());
+    report();
   }
+
+  /** Tell the main process what is on screen, for "your time". */
+  function report() { H.reportView({ boardVisible: visible, peekPaneId: peekId }); }
 
   function toggle() { setVisible(!visible); }
 
@@ -339,6 +377,7 @@
   }
 
   function nextNeeds() {
+    if (window.__focus && window.__focus.current) { window.__focus.blocked(); return; }
     const ids = [];
     for (const [id, p] of panes) if (p.meta.state === 'needs_input') ids.push(id);
     if (!ids.length) { if (visible) flash('Nothing needs you right now.'); return; }
@@ -660,6 +699,7 @@
     clearInterval(peekTimer);
     refreshPeek();
     peekTimer = setInterval(refreshPeek, 700);
+    report();
     requestAnimationFrame(() => reply.focus());
   }
 
@@ -670,6 +710,7 @@
     el.hidden = true;
     el.replaceChildren();
     root.focus();
+    report();
   }
 
   /* --------------------------------------------------------------- diff */
@@ -740,7 +781,7 @@
     const line = nextLine(t, ps);
     const sec = (label, ...kids) => h('div', { class: 'td-sec' }, h('div', { class: 'td-label', text: label }), ...kids);
     const col = COLUMNS.find((c) => c.id === columnOf(t));
-    drawerEl.replaceChildren(
+    drawerEl.replaceChildren(...[
       h('div', { class: 'td-head' }, h('strong', { text: t.title }), h('button', { class: 'mini', text: '×', title: 'Close (⌘I)', onclick: toggleDrawer })),
       sec('Status', h('div', { text: `${col ? col.label : t.status} · ${projectOf(t.cwd).name}` })),
       t.brief ? sec('Brief', h('div', { class: 'td-text', text: t.brief })) : null,
@@ -750,14 +791,19 @@
         t.diffStat ? h('div', { class: 'b-stat' }, h('span', { class: 'add', text: `+${t.diffStat.added}` }), document.createTextNode(' '), h('span', { class: 'del', text: `−${t.diffStat.removed}` }), document.createTextNode(` in ${t.diffStat.files} file${t.diffStat.files === 1 ? '' : 's'}`)) : null,
         t.worktree.removed ? null : h('button', { class: 'mini', text: 'View diff', onclick: () => diffDialog(t.id) }))
         : sec('Git', h('div', { class: 'dim small', text: 'Runs in the project’s own folder.' })),
+      sec('Time', ...(timeLines(t).length ? timeLines(t).map(([k, label, d]) => h('div', { class: 'td-time', 'data-bucket': k }, h('span', { text: label }), h('b', { text: d })))
+        : [h('div', { class: 'dim small', text: 'Nothing counted yet.' })]),
+        t.focus && t.focus.sessions ? h('div', { class: 'dim small', text: `Focus: ${t.focus.sessions} session${t.focus.sessions === 1 ? '' : 's'}, ${dur(t.focus.ms)}${t.focus.completed !== t.focus.sessions ? ` (${t.focus.completed} completed)` : ''}` }) : null),
       t.links && t.links.length ? sec('Links', ...t.links.map((u) => (/^(https?:|mailto:)/i.test(u)
         ? h('a', { class: 'td-link', href: u, target: '_blank', rel: 'noopener', text: u })
         : h('div', { class: 'td-text mono', text: u })))) : null,
       sec('Rules', h('div', { class: 'td-text', text: document.querySelector('#session-rules').textContent || '' })),
       h('div', { class: 'td-actions' },
+        window.__focus && window.__focus.current ? null : h('button', { class: 'mini', text: 'Focus…', title: 'Focus on this task (⌘⇧F)', onclick: () => window.__focus.dialog(t.id) }),
         h('button', { class: 'mini', text: 'Move…', onclick: () => moveDialog(t) }),
         h('button', { class: 'mini', text: 'Edit', onclick: () => taskDialog(t) }),
-        h('button', { class: 'mini', text: 'Board', onclick: () => setVisible(true) })));
+        window.__focus && window.__focus.current ? null : h('button', { class: 'mini', text: 'Board', onclick: () => setVisible(true) })),
+    ].filter(Boolean));   // a section left out must not print as "null"
   }
 
   function toggleDrawer() {
@@ -829,6 +875,7 @@
       e: () => t && taskDialog(t),
       n: () => taskDialog(t ? { cwd: t.cwd } : {}),
       p: () => openPlanner(t ? t.cwd : (snap.projects[0] || {}).cwd),
+      f: () => window.__focus.dialog(t && t.id),
     };
     const fn = keys[e.key];
     if (fn) { e.preventDefault(); fn(); }
@@ -868,13 +915,14 @@
   });
   toggleBtn.onclick = toggle;
 
-  // Ages on cards drift; refresh them once a minute while the board is open.
-  setInterval(() => { if (visible) render(); }, 60000);
+  // Ages and times on cards drift; fetch them again once a minute while the
+  // board or the task panel is open.
+  setInterval(() => { if (visible) refresh(); else if (drawerOpen) H.boardGet().then((s) => { snap = s; renderDrawer(); }); }, 60000);
 
   /** A pane went away; if it was the planner, the board takes the whole width again. */
   function paneClosed(id) { if (id && id === plannerId) closePlanner(); }
 
-  window.__board = { paneClosed, openPlanner, closePlanner, get plannerId() { return plannerId; }, updateChip, diffDialog, toggleDrawer, get drawerOpen() { return drawerOpen; }, rulesDialog, peek, closePeek, columnOf: (id) => { const t = snap.tasks.find((x) => x.id === id); return t ? columnOf(t) : null; }, toggle, show: () => setVisible(true), hide: () => setVisible(false), refresh, get visible() { return visible; }, select, start, move, nextNeeds };
+  window.__board = { paneClosed, openPlanner, closePlanner, get plannerId() { return plannerId; }, updateChip, diffDialog, toggleDrawer, get drawerOpen() { return drawerOpen; }, rulesDialog, peek, closePeek, columnOf: (id) => { const t = snap.tasks.find((x) => x.id === id); return t ? columnOf(t) : null; }, toggle, show: () => setVisible(true), hide: () => setVisible(false), refresh, get visible() { return visible; }, select, start, move, nextNeeds, taskOf: (id) => snap.tasks.find((x) => x.id === id) || null, selectedTask: () => snap.tasks.find((x) => x.id === selectedId) || null, currentTask, renderDrawer };
 
   // Open on the board when there is work on it.
   H.boardGet().then((s) => { snap = s; if (s.tasks.length) setVisible(true); });

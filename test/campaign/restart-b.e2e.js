@@ -26,6 +26,9 @@ module.exports = async function (ctx) {
     const kn = await js('window.seamux.knowledgeGet()');
     h.check('the knowledge server settings are kept', kn.configured && kn.config.name === 'kb');
     h.check('the board opens by itself when it has tasks', await js("!document.querySelector('#boardview').hidden"));
+    h.check('time held in memory was written at quit', (run.time || {}).agent >= 7 * 60000, run.time);
+    h.check('the focus session cut short by the quit is recorded, not completed', run.focus && run.focus.sessions === 1 && run.focus.completed === 0, run.focus);
+    h.check('no focus session runs after a restart', !ctx.focus.current && !(await js("document.body.classList.contains('focus-mode')")));
     h.check('cards offer Resume for the conversation', /Resume/.test(await h.cardText(ho.running)), await h.cardText(ho.running));
   });
 

@@ -2,7 +2,7 @@
 
 const path = require('path');
 const crypto = require('crypto');
-const { app, BrowserWindow, ipcMain, dialog, Notification, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Notification, Menu, shell, powerMonitor } = require('electron');
 const { PtyManager, State } = require('./pty-manager');
 const { Store } = require('./store');
 const { SecretStore } = require('./secrets');
@@ -17,6 +17,8 @@ const { extractNextStep, summarize } = require('./next-step');
 const worktrees = require('./worktree');
 const { ControlServer } = require('./control');
 const { TaskRunner } = require('./task-runner');
+const { TimeTracker } = require('./time-tracker');
+const { Focus } = require('./focus');
 
 // Tests must never write into the real user's config. Set before anything
 // reads a path, so store and secrets both land in the throwaway directory.
@@ -44,6 +46,13 @@ let knowledge = null;
 let control = null;
 let controlSocket = null;
 let activeSessionId = null;
+let focus = null;
+let timeTracker = null;
+// What the window shows, as the renderer reports it: the board, and a
+// terminal peeked at from the board.
+const view = { boardVisible: false, peekPaneId: null };
+// No input for this long and "your time" stops counting.
+const AWAY_SECONDS = Number(process.env.SEAMUX_AWAY_SECONDS) || 120;
 
 /**
  * Directories to open a session in at launch:
@@ -113,6 +122,8 @@ function send(channel, payload) {
  */
 function maybeNotify(s) {
   if (s.state !== State.NEEDS_INPUT) return;
+  // In focus, other terminals wait their turn: counted, not announced.
+  if (focus && focus.hold(s.id)) return;
   const looking = win && win.isFocused() && activeSessionId === s.id;
   if (looking) return;
 
@@ -130,7 +141,8 @@ function maybeNotify(s) {
 
 function updateBadge() {
   if (process.platform !== 'darwin' || !ptys) return;
-  const waiting = ptys.list().filter((s) => s.state === State.NEEDS_INPUT).length;
+  const held = new Set(focus && focus.current ? focus.current.held : []);
+  const waiting = ptys.list().filter((s) => s.state === State.NEEDS_INPUT && !held.has(s.id)).length;
   app.dock.setBadge(waiting ? String(waiting) : '');
 }
 
@@ -142,6 +154,7 @@ function wirePtys() {
   ptys.on('restarted', (p) => send('session:restarted', p));
   ptys.on('status', (s) => {
     send('session:status', s);
+    if (focus && s.state !== State.NEEDS_INPUT) focus.release(s.id);
     maybeNotify(s);
     updateBadge();
   });
@@ -303,6 +316,11 @@ function buildMenu() {
           label: 'Task Details',
           accelerator: 'CmdOrCtrl+I',
           click: () => send('ui:taskDrawer'),
+        },
+        {
+          label: 'Focus on This Task…',
+          accelerator: 'CmdOrCtrl+Shift+F',
+          click: () => send('ui:focus'),
         },
         {
           label: 'Next Task That Needs You',
@@ -772,6 +790,63 @@ function boardSnapshot() {
   };
 }
 
+/** Is the user looking at this terminal right now? */
+function lookingAt(paneId) {
+  if (!win || win.isDestroyed() || !win.isFocused()) return false;
+  try { if (powerMonitor.getSystemIdleTime() >= AWAY_SECONDS) return false; } catch { /* unknown: assume present */ }
+  if (view.peekPaneId) return view.peekPaneId === paneId;
+  return !view.boardVisible && activeSessionId === paneId;
+}
+
+/** Time per task, and focus mode. */
+function wireTime() {
+  timeTracker = new TimeTracker({
+    board,
+    intervalMs: Number(process.env.SEAMUX_TIME_TICK_MS) || 5000,
+    observe: () => {
+      const panes = ptys.list();
+      return board.list().map((t) => {
+        const pane = panes.find((s) => s.taskId === t.id && !s.exited);
+        return { taskId: t.id, status: t.status, paneState: pane ? pane.state : null, looking: !!pane && lookingAt(pane.id) };
+      });
+    },
+  });
+  timeTracker.start();
+
+  focus = new Focus({ board });
+  focus.on('changed', ({ focus: current, summary }) => {
+    updateBadge();
+    send('focus:changed', { focus: current, summary: summary || null });
+    if (summary) {
+      runner.emit('changed');
+      if (summary.why === 'done') {
+        const n = summary.held.length;
+        new Notification({
+          title: 'Focus session done',
+          body: `${summary.title}${n ? ` · ${n} other task${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} you` : ''}`,
+          silent: false,
+        }).on('click', () => { if (win) { win.show(); win.focus(); } }).show();
+      }
+    }
+  });
+  ptys.on('exit', (p) => focus.paneEnded(p.id));
+
+  ipcMain.handle('focus:get', () => focus.current);
+  ipcMain.handle('focus:start', (_e, { taskId, minutes }) => {
+    const pane = runner.paneOf(taskId);
+    focus.start({ taskId, paneId: pane && !pane.exited ? pane.id : null, minutes });
+    // Terminals already waiting on you wait a little longer.
+    for (const s of ptys.list()) if (s.state === State.NEEDS_INPUT && !s.exited) focus.hold(s.id);
+    return focus.current;
+  });
+  ipcMain.handle('focus:extend', (_e, minutes) => focus.extend(minutes));
+  ipcMain.handle('focus:stop', () => focus.stop('ended'));
+  ipcMain.on('view:report', (_e, v) => {
+    view.boardVisible = !!(v && v.boardVisible);
+    view.peekPaneId = (v && v.peekPaneId) || null;
+  });
+}
+
 function wireBoard() {
   board = new Board(path.join(app.getPath('userData'), 'board.json'));
   // No terminal survives an app restart: tasks left running go back to Ready
@@ -823,6 +898,7 @@ function wireBoard() {
   });
 
   ipcMain.handle('board:get', () => boardSnapshot());
+  wireTime();
   // One planner per project. Not a task: it does not count toward the limit.
   ipcMain.handle('board:openPlanner', async (_e, cwd) => {
     const live = ptys.list().find((s) => s.planner && !s.exited && (s.projectCwd || s.cwd) === cwd);
@@ -875,7 +951,7 @@ function wireBoard() {
   });
   ipcMain.handle('board:move', (_e, { id, status }) => runner.move(id, status));
   ipcMain.handle('board:start', (_e, id) => runner.start(id));
-  ipcMain.handle('board:remove', (_e, id) => { runner.remove(id); return true; });
+  ipcMain.handle('board:remove', (_e, id) => { runner.remove(id); focus.taskRemoved(id); return true; });
   ipcMain.handle('board:setLimit', async (_e, { cwd, limit }) => {
     const v = board.setLimit(cwd, limit);
     runner.emit('changed');
@@ -963,6 +1039,7 @@ function wireIpc() {
   ipcMain.handle('sessions:remove', async (_e, id) => {
     const info = ptys.list().find((s) => s.id === id);
     ptys.remove(id);
+    focus.paneEnded(id);
     updateBadge();
     if (info && info.taskId) await runner.paneClosed(info.taskId);
   });
@@ -1199,7 +1276,7 @@ app.whenReady().then(async () => {
   // Test seam: an end-to-end suite drives the real window through this.
   if (process.env.SEAMUX_E2E) {
     win.webContents.once('did-finish-load', () => {
-      require(process.env.SEAMUX_E2E)({ win, ptys, store, app, board, runner, knowledge });
+      require(process.env.SEAMUX_E2E)({ win, ptys, store, app, board, runner, knowledge, focus, timeTracker, view });
     });
   }
 
@@ -1213,6 +1290,9 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  // Time counted since the last flush, and a focus session cut short.
+  if (focus) focus.stop('ended');
+  if (timeTracker) timeTracker.stop();
   if (ptys) ptys.dispose();
   if (knowledge) knowledge.close();
   if (control) control.stop();

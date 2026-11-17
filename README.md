@@ -208,6 +208,31 @@ through `--mcp-config`, so agents can search and save knowledge themselves.
 **Fill in the Jejak example** shows a complete mapping for one such server;
 nothing in Seamux depends on it.
 
+### Time and focus
+
+Every task counts its time in four parts, shown on the card (time worked, with
+the split on hover) and in the task panel (⌘I):
+
+| Part | Counts while |
+|---|---|
+| **Agent working** | its terminal is working |
+| **You on it** | its terminal is in front of you (or peeked at from the board), the window is focused, and you have used the computer in the last two minutes |
+| **Blocked on you** | its agent is waiting for your answer |
+| **Waiting on others** | it sits in Waiting on others |
+
+A card turns its time red when the task has spent more time blocked on you
+than being worked on. Time is written to disk every half minute and on quit;
+a machine that sleeps counts at most 30 seconds for the gap.
+
+**Focus mode** (⌘⇧F, or F on a card) gives one task's terminal the window for
+25, 50, 90 or any number of minutes up to 240, starting the terminal if
+needed. The sidebar and board step aside; switching to another terminal, the
+board or ⌘J asks you to end focus first. Other tasks that start needing you
+are held: no notification and no badge, only a count in the focus bar. When
+time is up you get one notification and a summary of what waited; ⌘J then
+takes you to it. Ending early (⌘⇧F, **End focus**, or the terminal closing)
+is recorded on the task as a session that did not complete.
+
 Tasks are stored in `~/Library/Application Support/Seamux/board.json`.
 
 ## Context
@@ -402,7 +427,7 @@ SEAMUX_LIVE_DIR=/some/project SEAMUX_E2E=$PWD/test/live-claude.js npx electron .
 ### End-to-end campaign
 
 `npm run test:campaign` runs every scenario and edge case against the real
-window: three suites in parallel (each its own app and data folder), then a
+window: four suites in parallel (each its own app and data folder), then a
 two-part restart that quits a busy board and checks what comes back.
 
 | Suite | Covers |
@@ -411,6 +436,7 @@ two-part restart that quits a busy board and checks what comes back.
 | rules and knowledge | rule changes and notices, duplicates, plain sessions, promote; a knowledge server that crashes, finds nothing or fails; settings the dialog refuses; headers; agent access off |
 | worktrees, planner, hooks | no git or no commits, a worktree deleted by hand, parallel tasks in one repo, binary/deleted/renamed/large files in a diff; reopening and running two planners, seamux errors; hooks from plain, ended or unknown terminals |
 | restart | running, queued, waiting and blocked tasks, rules, limits and the knowledge server after quitting; resuming in the worktree; the seamux command on the new socket |
+| time and focus | each kind of time and when it stops (window in the background, board in front, peek); time chips and the task panel; focus lengths refused, starting, held tasks, switching refused, +5 min, running out, ending early, the terminal closing, a queued or blocked task; time and a focus session written at quit |
 
 ## Layout
 

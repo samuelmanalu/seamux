@@ -8,8 +8,8 @@
 const path = require('path');
 const { spawn } = require('child_process');
 
-const runOne = (label, args) => new Promise((resolve) => {
-  const p = spawn(process.execPath, args, { env: process.env });
+const runOne = (label, args, env = {}) => new Promise((resolve) => {
+  const p = spawn(process.execPath, args, { env: { ...process.env, ...env } });
   let out = '';
   p.stdout.on('data', (d) => { out += d; });
   p.stderr.on('data', (d) => { out += d; });
@@ -23,6 +23,7 @@ const runOne = (label, args) => new Promise((resolve) => {
     runOne('lifecycle', [board, suite('lifecycle.e2e.js')]),
     runOne('rules and knowledge', [board, suite('rules-knowledge.e2e.js')]),
     runOne('worktrees, planner, hooks', [board, suite('worktree-planner-hooks.e2e.js')]),
+    runOne('time and focus', [board, suite('time-focus.e2e.js')], { SEAMUX_TIME_TICK_MS: '300', SEAMUX_AWAY_SECONDS: '100000' }),
   ]);
   const restart = await runOne('restart', [path.join(__dirname, 'run-restart-e2e.js')]);
   let failed = 0;

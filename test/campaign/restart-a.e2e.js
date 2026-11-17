@@ -47,6 +47,16 @@ module.exports = async function (ctx) {
       sessionId: r.sessionId, worktree: r.worktree,
     }));
   });
+  await h.section('time and focus not yet on disk', async () => {
+    const ho = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'handoff.json'), 'utf8'));
+    await js(`window.__focus.begin(${S(ho.running)}, 25)`);
+    await sleep(300);
+    h.check('a focus session is running at quit', ctx.focus.current && ctx.focus.current.taskId === ho.running);
+    ctx.timeTracker.stop();     // no flush from here on but the one at quit
+    board.addTime(ho.running, 'agent', 7 * 60000);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'board.json'), 'utf8')).tasks.find((t) => t.id === ho.running);
+    h.check('seven minutes of agent time are held in memory only', board.get(ho.running).time.agent >= 7 * 60000 && !((onDisk.time || {}).agent >= 7 * 60000));
+  });
   // Quit with terminals still running, as a user closing the app would.
-  await h.finish();
+  await h.finish({ quit: true });
 };
