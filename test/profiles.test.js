@@ -53,7 +53,7 @@ eq('shell has no global rules file', shell.globalRules, null);
 /* ---- Codex is present but honestly marked ---- */
 const codex = profiles.get('codex');
 ok('codex is flagged unverified', codex.verified === false);
-ok('codex says why', /not installed/i.test(codex.unverifiedNote || ''));
+ok('codex says why', /not a signed-in conversation/i.test(codex.unverifiedNote || ''));
 eq('codex ships no invented detection rules', codex.rules, []);
 
 /* ---- Custom ---- */
