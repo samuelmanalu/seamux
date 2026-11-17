@@ -99,11 +99,16 @@ function addPane(meta) {
   return panes.get(meta.id);
 }
 
-function activate(id) {
+function activate(id, { keepBoard = false } = {}) {
   const pane = panes.get(id);
   if (!pane) return;
+  // In focus, only the focused terminal may come to the front.
+  if (window.__focus && !window.__focus.allows(id)) return;
 
   activeId = id;
+  // Opening a terminal leaves the board, except for the planner, which sits
+  // beside it.
+  if (!keepBoard && window.__board && window.__board.visible) window.__board.hide();
   for (const [pid, p] of panes) p.el.classList.toggle('active', pid === id);
   el.empty.hidden = true;
 
@@ -122,6 +127,7 @@ function activate(id) {
 
 async function closeSession(id) {
   await H.removeSession(id);
+  if (window.__board) window.__board.paneClosed(id);
   const pane = panes.get(id);
   if (pane) { pane.term.dispose(); pane.el.remove(); }
   panes.delete(id);
@@ -215,9 +221,11 @@ function renderCrumb() {
     el.crumbTitle.textContent = 'No session';
     el.crumbPath.textContent = '';
     el.crumbState.textContent = '';
+    if (window.__board) window.__board.updateChip(null);
     return;
   }
   const m = pane.meta;
+  if (window.__board) window.__board.updateChip(m);
   el.crumbTitle.textContent = m.title;
   el.crumbPath.title = m.profileLabel ? `Agent: ${m.profileLabel}` : '';
   el.crumbPath.textContent = m.cwd;
@@ -337,7 +345,7 @@ function toggleDebug() {
     refreshDebug();
     debugTimer = setInterval(refreshDebug, 500);
   }
-  if (activeId) requestAnimationFrame(() => panes.get(activeId).fit.fit());
+  if (activeId) { const id = activeId; requestAnimationFrame(() => { const p = panes.get(id); if (p) p.fit.fit(); }); }
 }
 
 /* --------------------------------------------------------------- artifacts */
@@ -372,18 +380,22 @@ async function refreshArtifacts() {
     return;
   }
   const pane = panes.get(activeId);
-  if (!pane.meta.jejakSessionId) {
+  if (!pane.meta.agentSessionId) {
     el.artifactsSub.textContent = pane.meta.profileLabel || '';
     el.artifactsBody.innerHTML =
-      '<div class="artifacts-empty">This profile has no Jejak session id (only Claude Code panes are correlated), so nothing to show.</div>';
+      '<div class="artifacts-empty">Only Claude Code terminals have a session id the knowledge server can be asked about.</div>';
     return;
   }
   el.artifactsBody.innerHTML = '<div class="artifacts-empty">Loading…</div>';
-  const { ok, artifacts, error } = await H.artifactsForSession(activeId);
+  const { ok, artifacts, error, unavailable } = await H.artifactsForSession(activeId);
   if (activeId !== pane.meta.id) return; // switched panes while awaiting
-  el.artifactsSub.textContent = pane.meta.jejakSessionId.slice(0, 8);
+  el.artifactsSub.textContent = pane.meta.agentSessionId.slice(0, 8);
+  if (unavailable) {
+    el.artifactsBody.innerHTML = '<div class="artifacts-empty">Set up a knowledge server with a session artifacts call (View → Knowledge Server…) to list what each session produced.</div>';
+    return;
+  }
   if (!ok) {
-    el.artifactsBody.innerHTML = `<div class="artifacts-error">Could not reach Jejak: ${escapeHtml(error || 'unknown error')}</div>`;
+    el.artifactsBody.innerHTML = `<div class="artifacts-error">Could not reach the knowledge server: ${escapeHtml(error || 'unknown error')}</div>`;
     return;
   }
   if (!artifacts.length) {
@@ -397,7 +409,7 @@ function toggleArtifacts() {
   artifactsOn = !artifactsOn;
   el.artifacts.hidden = !artifactsOn;
   if (artifactsOn) refreshArtifacts();
-  if (activeId) requestAnimationFrame(() => panes.get(activeId).fit.fit());
+  if (activeId) { const id = activeId; requestAnimationFrame(() => { const p = panes.get(id); if (p) p.fit.fit(); }); }
 }
 
 /* -------------------------------------------------------------------- wire */
@@ -424,6 +436,21 @@ H.onRestarted(({ id }) => {
 H.onExit(({ id }) => {
   const pane = panes.get(id);
   if (pane) pane.term.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n');
+});
+
+// A board task started a terminal (possibly by itself, from the queue).
+H.onSessionCreated((meta) => { if (!panes.has(meta.id)) addPane(meta); });
+
+// Main removed a pane (a task's ended terminal making way for a new one).
+H.onSessionRemoved(({ id }) => {
+  const pane = panes.get(id);
+  if (!pane) return;
+  pane.term.dispose(); pane.el.remove();
+  panes.delete(id);
+  order = order.filter((x) => x !== id);
+  if (window.__board) window.__board.paneClosed(id);
+  if (activeId === id) { activeId = null; if (order.length) activate(order[order.length - 1], { keepBoard: true }); else { el.empty.hidden = false; renderCrumb(); } }
+  renderSessions();
 });
 
 H.onNewSession(newSession);

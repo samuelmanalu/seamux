@@ -9,6 +9,8 @@ const { Terminal } = require('@xterm/headless');
 const { classify, State } = require('./status-detector');
 
 const POLL_MS = 400;          // how often we re-read the screen and reclassify
+// Output this soon after a hook's report still belongs to the screen it described.
+const HINT_GRACE_MS = 500;
 const SCROLLBACK = 5000;
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 34;
@@ -120,8 +122,41 @@ class PtyManager extends EventEmitter {
   queueInjection(id, text) {
     const s = this.sessions.get(id);
     if (!s || s.exited || !text) return false;
-    s.pendingInjection = String(text).replace(/\s*\n\s*/g, ' ').trim();
+    const line = String(text).replace(/\s*\n\s*/g, ' ').trim();
+    // Several notices can pile up before the session reaches its prompt (a
+    // context change, then a new rule): deliver all of them, newest last.
+    s.pendingInjection = s.pendingInjection ? `${s.pendingInjection} ${line}` : line;
     return true;
+  }
+
+  /**
+   * A status the agent reported itself (Claude Code hooks). Applied at once;
+   * the screen detector keeps running and has the last word on what the
+   * screen shows.
+   */
+  hint(id, state, reason) {
+    const s = this.sessions.get(id);
+    if (!s || s.exited) return null;
+    s.hintAt = Date.now();
+    this._setStatus(s, { state, reason, rule: 'hook' });
+    return this.describe(s);
+  }
+
+  setTitle(id, title) {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    s.title = String(title);
+    return this.describe(s);
+  }
+
+  /** Record which project rules this session has, and how they reached it. */
+  setRulesInfo(id, { count, via, version }) {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    if (count !== undefined) s.projectRuleCount = count;
+    if (via !== undefined) s.rulesVia = via;
+    if (version !== undefined) s.rulesVersion = version;
+    return this.describe(s);
   }
 
   /**
@@ -146,6 +181,9 @@ class PtyManager extends EventEmitter {
         COLORTERM: 'truecolor',
         // Claude Code (and most TUIs) behave badly if they think they're piped.
         FORCE_COLOR: '1',
+        // Seamux's own variables (the control socket, the seamux command on
+        // PATH). Not context: they are not listed as the session's values.
+        ...(opts.extraEnv || {}),
         // Resolved context last, so a set can deliberately override something
         // inherited from the shell that launched Seamux.
         ...(opts.env || {}),
@@ -197,14 +235,28 @@ class PtyManager extends EventEmitter {
       instructionCount: opts.instructionCount || 0,
       prePromptCount: opts.prePromptCount || 0,
       // Claude Code's own session id (passed at spawn via --session-id), so
-      // this pane can be correlated with what Jejak indexed for it. Null for
+      // this pane can be matched with what the knowledge server holds for it. Null for
       // profiles that have no such concept (Gemini, Shell, Codex).
-      jejakSessionId: opts.jejakSessionId || null,
+      agentSessionId: opts.agentSessionId || null,
+      // The board task this pane belongs to, if it was started from a card.
+      taskId: opts.taskId || null,
+      // The project's planner: a terminal for planning, not a task.
+      planner: !!opts.planner,
+      // The project this pane belongs to. Usually its folder; a task running
+      // in its own worktree still belongs to the project it came from.
+      projectCwd: opts.projectCwd || cwd,
+      // Project rules this session received: how many, how ('system' prompt,
+      // 'opening' message, 'notice' typed in later, or 'none'), and which
+      // version of the project's rules that was.
+      projectRuleCount: opts.projectRuleCount || 0,
+      rulesVia: opts.rulesVia || 'none',
+      rulesVersion: opts.rulesVersion || null,
       envKeys: Object.keys(opts.env || {}),
       envWarnings: opts.envWarnings || [],
       // What the process was actually launched with, so we can tell whether a
       // later change genuinely needs a restart or is already live in the file.
       spawnEnv: { ...(opts.env || {}) },
+      extraEnv: { ...(opts.extraEnv || {}) },
       contextPending: false,
       command,
       args,
@@ -319,7 +371,7 @@ class PtyManager extends EventEmitter {
   }
 
   /** Relaunch in place so the pane, id and position survive. */
-  restart(id, { vars, args, envSetIds, envSetNames, envWarnings, instructionCount, prePromptCount, jejakSessionId } = {}) {
+  restart(id, { vars, args, envSetIds, envSetNames, envWarnings, instructionCount, prePromptCount, agentSessionId } = {}) {
     const s = this.sessions.get(id);
     if (!s) return null;
 
@@ -330,7 +382,7 @@ class PtyManager extends EventEmitter {
     if (prePromptCount !== undefined) s.prePromptCount = prePromptCount;
     // A restart is a fresh conversation (see note above), so it gets a fresh
     // Claude session id too -- never reuse one across a respawn.
-    if (jejakSessionId !== undefined) s.jejakSessionId = jejakSessionId;
+    if (agentSessionId !== undefined) s.agentSessionId = agentSessionId;
     try { if (!s.exited) s.proc.kill(); } catch { /* already gone */ }
 
     const proc = pty.spawn(s.command, s.args, {
@@ -340,6 +392,7 @@ class PtyManager extends EventEmitter {
       env: {
         ...cleanParentEnv(),
         TERM: 'xterm-256color', COLORTERM: 'truecolor', FORCE_COLOR: '1',
+        ...(s.extraEnv || {}),
         ...nextVars,
         SEAMUX_CONTEXT_FILE: s.contextFile,
         SEAMUX_SESSION_ID: s.id,
@@ -395,6 +448,7 @@ class PtyManager extends EventEmitter {
       rule: s.rule,
       unread: s.unread,
       exitCode: s.exitCode,
+      exited: !!s.exited,
       createdAt: s.createdAt,
       envSetIds: s.envSetIds,
       envSetNames: s.envSetNames,
@@ -406,7 +460,13 @@ class PtyManager extends EventEmitter {
       contextPending: s.contextPending,
       profileId: s.profileId,
       profileLabel: s.profileLabel,
-      jejakSessionId: s.jejakSessionId || null,
+      agentSessionId: s.agentSessionId || null,
+      taskId: s.taskId || null,
+      projectRuleCount: s.projectRuleCount || 0,
+      rulesVia: s.rulesVia || 'none',
+      rulesVersion: s.rulesVersion || null,
+      projectCwd: s.projectCwd || s.cwd,
+      planner: !!s.planner,
     };
   }
 
@@ -436,7 +496,10 @@ class PtyManager extends EventEmitter {
         exited: s.exited,
         bellPending: s.bellPending,
       }, s.rules);
-      this._setStatus(s, verdict);
+      // A status the agent reported itself (a hook) holds until the terminal
+      // prints something new; a short grace covers output already on its way.
+      const hookHolds = s.hintAt && !s.exited && s.lastOutputAt <= s.hintAt + HINT_GRACE_MS;
+      if (!hookHolds) this._setStatus(s, verdict);
 
       if (s.pendingInjection && verdict.state === State.IDLE) {
         const text = s.pendingInjection;

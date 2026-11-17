@@ -79,8 +79,11 @@ const PROFILES = {
     binEnv: 'SEAMUX_GEMINI_BIN',
     // No --append-system-prompt equivalent; standing rules go in GEMINI.md.
     instructions: { mode: 'none' },
-    // The positional argument is ONE-SHOT. -i runs the prompt and stays
-    // interactive, which is what a session needs.
+    // -i runs the prompt and stays interactive, which is what a session
+    // needs (checked against gemini --help, 2026-11-17). Launched for real
+    // with Gemini CLI 0.68.0: it starts with the opening message, and a new
+    // folder (every worktree is one) first asks whether to trust it, which
+    // shows as Needs you. A signed-in conversation was not observed.
     prompt: { mode: 'flag', flag: '-i' },
     globalRules: '~/.gemini/GEMINI.md',
     rules: [],
@@ -107,10 +110,12 @@ const PROFILES = {
     prompt: { mode: 'positional' },
     globalRules: '~/.codex/AGENTS.md',
     rules: [],
-    // Not installed on this machine, so nothing here was observed. Generic
-    // detection only, and the UI says so rather than implying it was checked.
+    // Launched for real with codex-cli 0.169.0 (2026-11-17): it starts with
+    // the opening message as [PROMPT]; signed out, it shows its sign-in menu,
+    // which shows as Needs you. A signed-in conversation was not observed, so
+    // detection is the generic rules and the UI says so.
     verified: false,
-    unverifiedNote: 'Not installed here, so its flags and output were never observed. '
+    unverifiedNote: 'Seamux has seen it start, but not a signed-in conversation. '
       + 'Detection falls back to the generic rules; check with ⌘D and tell Seamux what you see.',
   },
 };

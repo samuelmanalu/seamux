@@ -2,7 +2,7 @@
 
 const path = require('path');
 const crypto = require('crypto');
-const { app, BrowserWindow, ipcMain, dialog, Notification, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Notification, Menu, shell, powerMonitor } = require('electron');
 const { PtyManager, State } = require('./pty-manager');
 const { Store } = require('./store');
 const { SecretStore } = require('./secrets');
@@ -11,7 +11,14 @@ const { parseEnv } = require('./dotenv');
 const { GeneralContext } = require('./general-context');
 const { interpret } = require('./interpreter');
 const profiles = require('./profiles');
-const jejakBridge = require('./jejak-bridge');
+const { KnowledgeClient, EXAMPLES: KNOWLEDGE_EXAMPLES } = require('./knowledge');
+const { Board, openingPrompt, rulesText } = require('./board');
+const { extractNextStep, summarize } = require('./next-step');
+const worktrees = require('./worktree');
+const { ControlServer } = require('./control');
+const { TaskRunner } = require('./task-runner');
+const { TimeTracker } = require('./time-tracker');
+const { Focus } = require('./focus');
 
 // Tests must never write into the real user's config. Set before anything
 // reads a path, so store and secrets both land in the throwaway directory.
@@ -33,7 +40,19 @@ let store = null;
 let secrets = null;
 let envs = null;
 let general = null;
+let board = null;
+let runner = null;
+let knowledge = null;
+let control = null;
+let controlSocket = null;
 let activeSessionId = null;
+let focus = null;
+let timeTracker = null;
+// What the window shows, as the renderer reports it: the board, and a
+// terminal peeked at from the board.
+const view = { boardVisible: false, peekPaneId: null };
+// No input for this long and "your time" stops counting.
+const AWAY_SECONDS = Number(process.env.SEAMUX_AWAY_SECONDS) || 120;
 
 /**
  * Directories to open a session in at launch:
@@ -82,8 +101,10 @@ function createWindow() {
     try { app.dock.setIcon(path.join(__dirname, '..', '..', 'assets', 'icon.png')); } catch { /* non-fatal */ }
   }
 
+  // Links open in the browser, and only web and mail links: anything else a
+  // task or a terminal shows (javascript:, file:, custom schemes) is ignored.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    if (/^(https?:|mailto:)/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
 
@@ -101,6 +122,8 @@ function send(channel, payload) {
  */
 function maybeNotify(s) {
   if (s.state !== State.NEEDS_INPUT) return;
+  // In focus, other terminals wait their turn: counted, not announced.
+  if (focus && focus.hold(s.id)) return;
   const looking = win && win.isFocused() && activeSessionId === s.id;
   if (looking) return;
 
@@ -118,7 +141,8 @@ function maybeNotify(s) {
 
 function updateBadge() {
   if (process.platform !== 'darwin' || !ptys) return;
-  const waiting = ptys.list().filter((s) => s.state === State.NEEDS_INPUT).length;
+  const held = new Set(focus && focus.current ? focus.current.held : []);
+  const waiting = ptys.list().filter((s) => s.state === State.NEEDS_INPUT && !held.has(s.id)).length;
   app.dock.setBadge(waiting ? String(waiting) : '');
 }
 
@@ -130,6 +154,7 @@ function wirePtys() {
   ptys.on('restarted', (p) => send('session:restarted', p));
   ptys.on('status', (s) => {
     send('session:status', s);
+    if (focus && s.state !== State.NEEDS_INPUT) focus.release(s.id);
     maybeNotify(s);
     updateBadge();
   });
@@ -154,13 +179,21 @@ function profileFor(cwd, explicitId) {
   return profiles.get(id, store.customProfiles());
 }
 
-function buildArgs(profile, instructions, prePrompts, jejakSessionId) {
+function buildArgs(profile, instructions, prePrompts, session = {}) {
   const extra = (process.env.SEAMUX_EXTRA_ARGS || process.env.SEAMUX_CLAUDE_ARGS || '')
     .split(' ').filter(Boolean);
-  // Forcing Claude Code's own session id lets Jejak (the knowledge-graph
-  // indexer) be queried later by exactly this pane's id -- see jejak-bridge.js.
-  // Only the claude profile understands --session-id.
-  if (jejakSessionId && profile.id === 'claude') extra.push('--session-id', jejakSessionId);
+  // Forcing Claude Code's own session id lets the knowledge server be asked
+  // later about exactly this pane's session (the Artifacts panel), and lets a
+  // board task resume the same conversation after a restart.
+  // Only the claude profile understands --session-id / --resume.
+  // Seamux's hooks (status and the exact last message), added to the user's own.
+  if (session.settings && profile.id === 'claude') extra.push('--settings', session.settings);
+  // The knowledge server, so the agent can search and save knowledge itself.
+  // --mcp-config takes several values, so it must be followed by another
+  // option, never by the positional opening prompt: --session-id / --resume
+  // always come right after it (both are set whenever this is).
+  if (session.mcpConfig && session.id && profile.id === 'claude') extra.push('--mcp-config', session.mcpConfig);
+  if (session.id && profile.id === 'claude') extra.push(session.resume ? '--resume' : '--session-id', session.id);
   return profiles.buildArgs(profile, {
     instructions: instructions || [],
     prePrompts: prePrompts || [],
@@ -169,7 +202,7 @@ function buildArgs(profile, instructions, prePrompts, jejakSessionId) {
 }
 
 /** A fresh Claude session id for a pane about to be (re)spawned, or null for
- * profiles Jejak has no hooks for. Never reused across a respawn -- a restart
+ * other profiles. Never reused across a respawn -- a restart
  * is a new conversation, so it gets a new id too.
  *
  * Gated on the RESOLVED command being literally 'claude', not just the
@@ -178,7 +211,7 @@ function buildArgs(profile, instructions, prePrompts, jejakSessionId) {
  * unrecognized --session-id makes bash exit(2) immediately -- confirmed by
  * hand: `bash --session-id x` -> "invalid option", never spawns.
  */
-function newJejakSessionId(profile) {
+function newAgentSessionId(profile) {
   return (profile.id === 'claude' && profiles.commandFor(profile) === 'claude')
     ? crypto.randomUUID() : null;
 }
@@ -197,17 +230,19 @@ function newJejakSessionId(profile) {
  */
 async function reconcileSessions(filter = {}) {
   for (const info of ptys.list()) {
-    if (filter.cwd && info.cwd !== filter.cwd) continue;
+    const project = info.projectCwd || info.cwd;
+    if (filter.cwd && project !== filter.cwd) continue;
     const session = ptys.sessions.get(info.id);
     if (!session) continue;
 
-    const ids = session.contextOverridden ? (info.envSetIds || []) : store.envSetsFor(info.cwd);
+    const ids = session.contextOverridden ? (info.envSetIds || []) : store.envSetsFor(project);
     const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
     const before = (info.envKeys || []).join(',');
 
-    const profile = profileFor(info.cwd, info.profileId);
+    const profile = profileFor(project, info.profileId);
+    const rules = projectRules(project, profile);
     ptys.setContext(info.id, {
-      vars, args: buildArgs(profile, instructions, prePrompts),
+      vars, args: buildArgs(profile, [...rules.instructions, ...instructions], [...rules.prompts, ...prePrompts]),
       envSetIds: ids, envSetNames: names, envWarnings: warnings,
       instructionCount: profile.instructions.mode === 'none' ? 0 : instructions.length,
       prePromptCount: profile.prompt.mode === 'none' ? 0 : prePrompts.length,
@@ -262,6 +297,36 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+T',
           click: () => send('ui:newSession'),
         },
+        {
+          label: 'New Task…',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => send('ui:newTask'),
+        },
+        {
+          label: 'Promote Selection to Project Rule…',
+          accelerator: 'CmdOrCtrl+Shift+R',
+          click: () => send('ui:promoteRule'),
+        },
+        {
+          label: 'Project Rules…',
+          accelerator: 'CmdOrCtrl+Shift+P',
+          click: () => send('ui:projectRules'),
+        },
+        {
+          label: 'Task Details',
+          accelerator: 'CmdOrCtrl+I',
+          click: () => send('ui:taskDrawer'),
+        },
+        {
+          label: 'Focus on This Task…',
+          accelerator: 'CmdOrCtrl+Shift+F',
+          click: () => send('ui:focus'),
+        },
+        {
+          label: 'Next Task That Needs You',
+          accelerator: 'CmdOrCtrl+J',
+          click: () => send('ui:nextNeeds'),
+        },
         { type: 'separator' },
         ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
           label: `Go to Session ${n}`,
@@ -278,6 +343,11 @@ function buildMenu() {
       label: 'View',
       submenu: [
         {
+          label: 'Board',
+          accelerator: 'CmdOrCtrl+B',
+          click: () => send('ui:toggleBoard'),
+        },
+        {
           label: 'Context',
           accelerator: 'CmdOrCtrl+E',
           click: () => send('ui:toggleEnv'),
@@ -286,6 +356,10 @@ function buildMenu() {
           label: 'Toggle Detector Debug',
           accelerator: 'CmdOrCtrl+D',
           click: () => send('ui:toggleDebug'),
+        },
+        {
+          label: 'Knowledge Server…',
+          click: () => send('ui:knowledge'),
         },
         {
           label: 'Artifacts',
@@ -304,33 +378,597 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+/**
+ * Start a terminal. Plain sessions and board tasks both come through here.
+ *
+ * For a task: `taskId` ties the pane to its card, `taskPrompts` are added to
+ * the opening prompt, and `resumeSessionId` continues an earlier conversation
+ * instead of starting a new one. A resumed conversation already has its
+ * opening prompt, so none is sent again.
+ */
+async function createSession(o) {
+  if (o.cwd) store.addProject(o.cwd);
+  // Explicit ids win over the project's bindings, so a one-off session can
+  // opt into a different environment without changing the binding.
+  const ids = o.envSetIds || (o.cwd ? store.envSetsFor(o.cwd) : []);
+  const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
+  const profile = profileFor(o.cwd, o.profileId);
+  const dropped = profiles.unsupported(profile);
+  const resume = !!o.resumeSessionId;
+  const sessionId = resume ? o.resumeSessionId : newAgentSessionId(profile);
+  const rules = projectRules(o.cwd, profile, { resume });
+  // The planner's standing instructions travel like rules: system prompt
+  // where the agent has one, otherwise the opening message.
+  const plan = o.planner ? plannerText(o.cwd) : null;
+  if (plan && profile.instructions.mode === 'flag') rules.instructions.push(plan);
+  else if (plan && !resume) rules.prompts.push(plan);
+  const prompts = resume ? [] : [...rules.prompts, ...prePrompts, ...(o.taskPrompts || [])];
+  const realClaude = profile.id === 'claude' && profiles.commandFor(profile) === 'claude';
+  const mcpConfig = realClaude ? knowledgeMcpFile() : null;
+  const settings = realClaude ? claudeHooksFile() : null;
+  const { resumeSessionId, taskPrompts, runCwd, ...rest } = o;
+  return ptys.create({
+    ...rest,
+    extraEnv: paneEnv(o.cwd),
+    cwd: runCwd || o.cwd,
+    projectCwd: o.cwd,
+    projectRuleCount: rules.count, rulesVia: rules.via, rulesVersion: rules.version,
+    command: o.command || profiles.commandFor(profile),
+    args: buildArgs(profile, [...rules.instructions, ...instructions], prompts, { id: sessionId, resume, mcpConfig, settings }),
+    agentSessionId: sessionId,
+    env: vars, envSetIds: ids, envSetNames: names, envWarnings: warnings,
+    instructionCount: profile.instructions.mode === 'none' ? 0 : instructions.length,
+    prePromptCount: profile.prompt.mode === 'none' ? 0 : prompts.length,
+    profileId: profile.id, profileLabel: profile.label, rules: profile.rules,
+    // Say what this agent cannot carry rather than dropping it silently.
+    envWarnings: [...warnings, ...(dropped.length && (instructions.length || prompts.length)
+      ? [`${profile.label} has no way to take ${dropped.join(' or ')} — that part of the context was not applied.`]
+      : [])],
+  });
+}
+
+/**
+ * Seamux's own variables in every terminal: where the control socket is,
+ * which project the terminal belongs to, and the seamux command on PATH.
+ */
+function paneEnv(projectCwd) {
+  if (!controlSocket) return {};
+  return {
+    SEAMUX_SOCKET: controlSocket,
+    SEAMUX_PROJECT: projectCwd || '',
+    PATH: `${path.join(app.getPath('userData'), 'bin')}:${process.env.PATH || ''}`,
+  };
+}
+
+/**
+ * Claude Code hooks that report to Seamux: a prompt sent (working), a
+ * notification (it needs you, with Claude's own words), and a finished turn
+ * (with its exact last message). Passed with --settings, which adds to the
+ * user's own hooks rather than replacing them.
+ */
+function claudeHooksFile() {
+  if (!controlSocket) return null;
+  const fs = require('fs');
+  const launcher = path.join(app.getPath('userData'), 'bin', 'seamux');
+  const q = `'${launcher.replace(/'/g, `'\\''`)}'`;   // the path has spaces
+  const cmd = (event) => [{ hooks: [{ type: 'command', command: `${q} hook ${event}`, timeout: 5 }] }];
+  const file = path.join(app.getPath('userData'), 'claude-hooks.json');
+  fs.writeFileSync(file, JSON.stringify({
+    hooks: { UserPromptSubmit: cmd('prompt'), Notification: cmd('notification'), Stop: cmd('stop') },
+  }, null, 2));
+  return file;
+}
+
+/** A Claude Code hook event, reported by `seamux hook` from inside a terminal. */
+function onHook(req) {
+  const info = ptys.list().find((s) => s.id === req.pane);
+  if (!info || info.exited) throw new Error('no such terminal');
+  const p = req.payload || {};
+  // The report must come from the conversation this terminal is running.
+  if (!info.agentSessionId || p.session_id !== info.agentSessionId) throw new Error('not this terminal’s session');
+  let status = null;
+  if (req.event === 'prompt') status = ptys.hint(info.id, State.RUNNING, 'working on your prompt');
+  else if (req.event === 'notification') status = ptys.hint(info.id, State.NEEDS_INPUT, p.message || 'needs your attention');
+  else if (req.event === 'stop') {
+    status = ptys.hint(info.id, State.IDLE, 'finished its turn');
+    const text = summarize(p.last_assistant_message);
+    if (info.taskId && board.get(info.taskId) && text) {
+      board.setNextStep(info.taskId, text);
+      hookStopAt.set(info.id, Date.now());
+      refreshDiffStat(info.taskId);
+      runner.emit('changed');
+    }
+  } else throw new Error(`unknown hook event: ${req.event}`);
+  if (status) { send('session:status', status); maybeNotify(status); updateBadge(); }
+  return { applied: req.event };
+}
+
+/** When a pane last got its next step from a Stop hook, so the screen reader does not overwrite it. */
+const hookStopAt = new Map();
+
+/** What the project's planner is for, and how it puts tasks on the board. */
+function plannerText(cwd) {
+  const name = projectName(cwd);
+  return [
+    `You are the planner for the project ${name} in Seamux, a board where every task gets its own terminal and agent.`,
+    'Your job is to help the user turn goals into a clear plan of tasks on that board. Do not write or change code yourself.',
+    'Add each task with the seamux command, for example:',
+    '  seamux task add "Short title" --brief "What to do, and how to tell it is done" --after <id of a task it needs first>',
+    'Keep titles short. Give every brief its acceptance criteria. Use --after (repeatable) when a task needs another one done first.',
+    'See the current board with: seamux task list',
+    'New tasks land in Backlog; the user reviews them and moves them to Ready. Before adding more than five tasks at once, show the plan and ask.',
+  ].join('\n');
+}
+
+/** The control socket: how the seamux command reaches the board. */
+async function wireControl() {
+  const fs = require('fs');
+  const os = require('os');
+  const ud = app.getPath('userData');
+  // A Unix socket path must stay short (about 104 bytes on macOS).
+  let sock = path.join(ud, 'seamux.sock');
+  if (sock.length > 100) sock = path.join(os.tmpdir(), `seamux-${process.getuid ? process.getuid() : 'u'}.sock`);
+
+  const COLUMN = { backlog: 'Backlog', ready: 'Ready', queued: 'Queued', active: 'In progress', waiting: 'Waiting on others', review: 'Review', done: 'Done' };
+  const knownProject = (cwd) => store.projects().some((p) => p.cwd === cwd) || board.list().some((t) => t.cwd === cwd);
+  control = new ControlServer({
+    socketPath: sock,
+    handle: async (req) => {
+      if (req.cmd === 'hook') return onHook(req);
+      const project = req.project ? path.resolve(String(req.project)) : '';
+      if (!project || !knownProject(project)) throw new Error(`not a project on the Seamux board: ${project || '(none)'}`);
+      if (req.cmd === 'task.add') {
+        const t = board.create({
+          cwd: project, title: req.title, brief: req.brief || '', agent: req.agent || null,
+          status: 'backlog', dependsOn: Array.isArray(req.after) ? req.after : [],
+        });
+        runner.emit('changed');
+        return { task: { id: t.id, title: t.title, status: t.status } };
+      }
+      if (req.cmd === 'task.list') {
+        return {
+          tasks: board.list().filter((t) => t.cwd === project).sort((a, b) => (a.order || 0) - (b.order || 0)).map((t) => ({
+            id: t.id, title: t.title, column: COLUMN[t.status] || t.status, blockedBy: board.blockedBy(t.id).map((x) => x.id),
+          })),
+        };
+      }
+      throw new Error(`unknown request: ${req.cmd}`);
+    },
+  });
+  try {
+    controlSocket = await control.start();
+  } catch (err) {
+    console.error('control socket failed:', err.message);
+    controlSocket = null;
+    return;
+  }
+
+  // The launcher: Electron itself runs the command as Node, so it works the
+  // same from a packaged app, whose code sits in an archive a shell cannot run.
+  const bin = path.join(ud, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+  fs.writeFileSync(path.join(bin, 'seamux'),
+    `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${q(process.execPath)} ${q(path.join(__dirname, '..', 'cli', 'seamux-cli.js'))} "$@"\n`,
+    { mode: 0o755 });
+}
+
+/**
+ * Write the knowledge server's agent config where Claude Code can read it
+ * (--mcp-config). Owner-only, because it can carry the server's headers.
+ * Returns null when there is no server or agent access is off.
+ */
+function knowledgeMcpFile() {
+  const cfg = knowledge && knowledge.agentConfig();
+  const file = path.join(app.getPath('userData'), 'knowledge-mcp.json');
+  const fs = require('fs');
+  if (!cfg) { try { fs.unlinkSync(file); } catch { /* none */ } return null; }
+  fs.writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch { /* best effort */ }
+  return file;
+}
+
+/** Record a rule on the knowledge server, if a "save" call is set up. Never blocks the UI. */
+function saveRuleToKnowledge(cwd, text) {
+  if (!knowledge || !knowledge.mapped('save')) return;
+  knowledge.saveRule({ rule: text, 'project.path': cwd, 'project.name': projectName(cwd) })
+    .then(() => send('knowledge:status', { ok: true, message: 'Rule saved to the knowledge server.' }))
+    .catch((err) => send('knowledge:status', { ok: false, message: `Could not save the rule to the knowledge server: ${err.message}` }));
+}
+
+function wireKnowledge() {
+  knowledge = new KnowledgeClient({
+    getConfig: () => store.data.knowledge || null,
+    secrets: {
+      read: () => secrets.data,
+      write: (v) => { secrets.data = v; secrets.save(); },
+    },
+    openExternal: (url) => shell.openExternal(url),
+  });
+
+  // Header values never leave the main process; the renderer sees names only.
+  const describe = () => {
+    const k = secrets.data.knowledge || {};
+    return {
+      config: store.data.knowledge || null,
+      examples: KNOWLEDGE_EXAMPLES,
+      headerNames: Object.keys(k.headers || {}),
+      signedIn: !!(k.oauth && k.oauth.tokens),
+      configured: knowledge.configured(),
+      mapped: { save: knowledge.mapped('save'), importRules: knowledge.mapped('importRules'), sessionArtifacts: knowledge.mapped('sessionArtifacts') },
+    };
+  };
+  ipcMain.handle('knowledge:get', () => describe());
+  ipcMain.handle('knowledge:set', async (_e, { config, headers }) => {
+    store.data.knowledge = config && config.server && config.server.type !== 'none' ? config : null;
+    store.save();
+    if (headers) {   // { NAME: value } replaces all headers; null keeps them
+      secrets.data = { ...secrets.data, knowledge: { ...(secrets.data.knowledge || {}), headers } };
+      secrets.save();
+    }
+    await knowledge.close();
+    send('knowledge:changed', describe());
+    return describe();
+  });
+  // Test the settings on screen without saving them: a throwaway client with
+  // the draft config, and the draft headers over the saved ones.
+  ipcMain.handle('knowledge:test', async (_e, draft) => {
+    const probe = draft ? new KnowledgeClient({
+      getConfig: () => draft.config,
+      secrets: {
+        read: () => (draft.headers
+          ? { ...secrets.data, knowledge: { ...(secrets.data.knowledge || {}), headers: draft.headers } }
+          : secrets.data),
+        write: () => {},
+      },
+    }) : knowledge;
+    try { return { ok: true, tools: await probe.listTools() }; }
+    catch (err) { return { ok: false, error: err.message, needsSignIn: !!err.needsSignIn }; }
+    finally { if (probe !== knowledge) await probe.close(); }
+  });
+  ipcMain.handle('knowledge:signIn', async () => {
+    try { await knowledge.signIn(); send('knowledge:changed', describe()); return { ok: true }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('knowledge:signOut', async () => { await knowledge.signOut(); send('knowledge:changed', describe()); return describe(); });
+  ipcMain.handle('knowledge:importRules', async (_e, cwd) => {
+    try { return { ok: true, rules: await knowledge.importRules({ 'project.path': cwd, 'project.name': projectName(cwd) }) }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  });
+}
+
+function projectName(cwd) {
+  const p = store.projects().find((x) => x.cwd === cwd);
+  return (p && p.name) || path.basename(cwd || '') || cwd;
+}
+
+/**
+ * How a project's rules reach a new terminal. They belong in the system
+ * prompt, where they hold for the whole session and survive compaction. An
+ * agent with no such option gets them in its opening message instead, which
+ * a resumed conversation does not receive again.
+ */
+function projectRules(cwd, profile, { resume = false } = {}) {
+  const list = cwd ? board.rulesFor(cwd) : [];
+  const version = cwd ? board.rulesVersion(cwd) : null;
+  const text = rulesText(list, cwd ? projectName(cwd) : '');
+  const none = { instructions: [], prompts: [], count: list.length, version };
+  if (!text) return { ...none, via: 'none' };
+  if (profile.instructions.mode === 'flag') return { ...none, instructions: [text], via: 'system' };
+  if (profile.prompt.mode !== 'none' && !resume) return { ...none, prompts: [text], via: 'opening' };
+  return { ...none, via: 'none' };
+}
+
+/**
+ * Tell every running terminal of a project that its rules changed. Typed in
+ * at the session's next prompt, with the full current list, so a session
+ * never has to piece the rules together from several notices. Plain shells
+ * are skipped: the text would run as a command.
+ */
+function announceRules(cwd, change) {
+  const list = board.rulesFor(cwd);
+  const version = board.rulesVersion(cwd);
+  const current = list.length
+    ? `Current project rules: ${list.map((r, i) => `${i + 1}. ${r.text}`).join(' ')}`
+    : 'This project has no rules now.';
+  let told = 0;
+  for (const info of ptys.list()) {
+    if (info.exited || (info.projectCwd || info.cwd) !== cwd || info.profileId === 'shell') continue;
+    if (!ptys.queueInjection(info.id, `[Seamux] Project rules changed: ${change}. ${current} Follow them for the rest of this session.`)) continue;
+    const via = info.rulesVia === 'none' ? 'notice' : info.rulesVia;
+    send('session:status', ptys.setRulesInfo(info.id, { count: list.length, version, via }));
+    told++;
+  }
+  runner.emit('changed');
+  return told;
+}
+
+/**
+ * Where a task's terminal runs. Decided once, at its first start, and kept
+ * after that: its conversation (claude --resume looks in the folder it began
+ * in) and its changes live there.
+ *   worktree  its own git worktree; refused if the project is not in git
+ *   main      the project's own folder
+ *   auto      a worktree when the project allows more than one terminal at
+ *             once and is in git; otherwise the project's folder
+ */
+async function taskRunCwd(task) {
+  const fs = require('fs');
+  if (task.worktree && fs.existsSync(task.worktree.path)) return task.worktree.runCwd;
+  if (task.worktree) {
+    // Removed earlier: check its kept branch out again, at the same path, so
+    // a resumed conversation finds its folder.
+    const w = await worktrees.create({
+      projectCwd: task.cwd, task, baseDir: path.join(app.getPath('userData'), 'worktrees'),
+      name: path.basename(task.worktree.path),
+    });
+    board.setWorktree(task.id, { ...w, base: task.worktree.base });
+    return w.runCwd;
+  }
+  if (task.sessionId && !task.worktree) return task.cwd;   // began in the project folder
+  let want = task.isolation === 'worktree';
+  if (task.isolation === 'auto') {
+    const root = board.limitFor(task.cwd) > 1 ? await worktrees.repoRoot(task.cwd) : null;
+    // A repository without a first commit has nothing to branch from: automatic
+    // mode then uses the project folder.
+    want = !!root && await worktrees.hasCommits(root);
+  }
+  if (!want) return task.cwd;
+  const w = await worktrees.create({ projectCwd: task.cwd, task, baseDir: path.join(app.getPath('userData'), 'worktrees') });
+  board.setWorktree(task.id, w);
+  return w.runCwd;
+}
+
+/** Refresh a task's +/- line counts from its worktree. Quiet on failure. */
+async function refreshDiffStat(taskId) {
+  const t = board.get(taskId);
+  if (!t || !t.worktree || !require('fs').existsSync(t.worktree.path)) return null;
+  try {
+    const st = await worktrees.stat(t.worktree.path, t.worktree.base);
+    board.setDiffStat(taskId, st);
+    runner.emit('changed');
+    return st;
+  } catch { return null; }
+}
+
+/** Spawn the one terminal a board task owns. Used by the TaskRunner. */
+async function spawnTask(task) {
+  if (!require('fs').existsSync(task.cwd)) throw new Error(`the project folder no longer exists: ${task.cwd}`);
+  // A task owns one terminal: an earlier one that ended makes way.
+  for (const old of ptys.list().filter((s) => s.taskId === task.id && s.exited)) {
+    ptys.remove(old.id);
+    send('session:removed', { id: old.id });
+  }
+  const runCwd = await taskRunCwd(task);
+  task = board.get(task.id);
+  const profile = profileFor(task.cwd, task.agent);
+  // Only the real claude binary can resume; anything else starts fresh.
+  const canResume = profile.id === 'claude' && profiles.commandFor(profile) === 'claude';
+  const resume = canResume && task.sessionId ? task.sessionId : null;
+  const meta = await createSession({
+    cwd: task.cwd,
+    runCwd,
+    title: task.title,
+    profileId: profile.id,
+    taskId: task.id,
+    resumeSessionId: resume,
+    taskPrompts: resume ? [] : [openingPrompt(task)],
+  });
+  if (!resume) board.setSessionId(task.id, meta.agentSessionId || null);
+  send('session:created', meta);
+  return meta;
+}
+
+/** Everything the board view needs, in one payload. */
+function boardSnapshot() {
+  const panes = ptys.list();
+  const known = new Map(store.projects().map((p) => [p.cwd, p]));
+  // A task keeps its lane even if its project was removed from the sidebar.
+  for (const t of board.list()) {
+    if (!known.has(t.cwd)) known.set(t.cwd, { cwd: t.cwd, name: path.basename(t.cwd) || t.cwd, envSetIds: [] });
+  }
+  const projects = [...known.values()].map((p) => {
+    const live = panes.filter((s) => s.taskId && !s.exited && (s.projectCwd || s.cwd) === p.cwd).length;
+    return { ...p, limit: board.limitFor(p.cwd), live, ruleCount: board.rulesFor(p.cwd).length, rulesVersion: board.rulesVersion(p.cwd) };
+  });
+  const tasks = board.list().map((t) => {
+    const pane = panes.find((s) => s.taskId === t.id);
+    return {
+      ...t,
+      blockedBy: board.blockedBy(t.id),
+      pane: pane ? {
+        id: pane.id, state: pane.state, reason: pane.reason, exited: !!pane.exited,
+        projectRuleCount: pane.projectRuleCount, rulesVia: pane.rulesVia, rulesVersion: pane.rulesVersion,
+      } : null,
+    };
+  });
+  return {
+    projects,
+    tasks,
+    globalLimit: board.globalLimit(),
+    liveTotal: panes.filter((s) => s.taskId && !s.exited).length,
+  };
+}
+
+/** Is the user looking at this terminal right now? */
+function lookingAt(paneId) {
+  if (!win || win.isDestroyed() || !win.isFocused()) return false;
+  try { if (powerMonitor.getSystemIdleTime() >= AWAY_SECONDS) return false; } catch { /* unknown: assume present */ }
+  if (view.peekPaneId) return view.peekPaneId === paneId;
+  return !view.boardVisible && activeSessionId === paneId;
+}
+
+/** Time per task, and focus mode. */
+function wireTime() {
+  timeTracker = new TimeTracker({
+    board,
+    intervalMs: Number(process.env.SEAMUX_TIME_TICK_MS) || 5000,
+    observe: () => {
+      const panes = ptys.list();
+      return board.list().map((t) => {
+        const pane = panes.find((s) => s.taskId === t.id && !s.exited);
+        return { taskId: t.id, status: t.status, paneState: pane ? pane.state : null, looking: !!pane && lookingAt(pane.id) };
+      });
+    },
+  });
+  timeTracker.start();
+
+  focus = new Focus({ board });
+  focus.on('changed', ({ focus: current, summary }) => {
+    updateBadge();
+    send('focus:changed', { focus: current, summary: summary || null });
+    if (summary) {
+      runner.emit('changed');
+      if (summary.why === 'done') {
+        const n = summary.held.length;
+        new Notification({
+          title: 'Focus session done',
+          body: `${summary.title}${n ? ` · ${n} other task${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} you` : ''}`,
+          silent: false,
+        }).on('click', () => { if (win) { win.show(); win.focus(); } }).show();
+      }
+    }
+  });
+  ptys.on('exit', (p) => focus.paneEnded(p.id));
+
+  ipcMain.handle('focus:get', () => focus.current);
+  ipcMain.handle('focus:start', (_e, { taskId, minutes }) => {
+    const pane = runner.paneOf(taskId);
+    focus.start({ taskId, paneId: pane && !pane.exited ? pane.id : null, minutes });
+    // Terminals already waiting on you wait a little longer.
+    for (const s of ptys.list()) if (s.state === State.NEEDS_INPUT && !s.exited) focus.hold(s.id);
+    return focus.current;
+  });
+  ipcMain.handle('focus:extend', (_e, minutes) => focus.extend(minutes));
+  ipcMain.handle('focus:stop', () => focus.stop('ended'));
+  ipcMain.on('view:report', (_e, v) => {
+    view.boardVisible = !!(v && v.boardVisible);
+    view.peekPaneId = (v && v.peekPaneId) || null;
+  });
+}
+
+function wireBoard() {
+  board = new Board(path.join(app.getPath('userData'), 'board.json'));
+  // No terminal survives an app restart: tasks left running go back to Ready
+  // and resume their conversation when started again.
+  board.recoverAfterRestart();
+  runner = new TaskRunner({ board, ptys, spawn: spawnTask });
+  runner.on('changed', () => send('board:changed', boardSnapshot()));
+  ptys.on('exit', (p) => {
+    const info = ptys.list().find((s) => s.id === p.id);
+    if (info && info.taskId) runner.terminalEnded().catch(() => {});
+  });
+
+  // The agent's latest message becomes the card's next step when it stops.
+  const lastState = new Map();
+  ptys.on('status', (s) => {
+    const prev = lastState.get(s.id);
+    lastState.set(s.id, s.state);
+    if (!s.taskId || !board.get(s.taskId)) return;
+    const stopped = (prev === State.RUNNING || prev === State.STARTING)
+      && (s.state === State.IDLE || s.state === State.NEEDS_INPUT);
+    if (!stopped) return;
+    // A Stop hook already gave the exact message; the screen is only a fallback.
+    const fromHook = Date.now() - (hookStopAt.get(s.id) || 0) < 15000;
+    const text = fromHook ? null : extractNextStep(ptys.screenText(s.id), s.profileId);
+    if (text) { board.setNextStep(s.taskId, text); runner.emit('changed'); }
+    refreshDiffStat(s.taskId);
+  });
+
+  ipcMain.handle('board:diff', async (_e, id) => {
+    const t = board.get(id);
+    if (!t || !t.worktree) return { ok: false, error: 'this task runs in the project’s own folder, so it has no diff of its own' };
+    if (!require('fs').existsSync(t.worktree.path)) return { ok: false, error: 'this task’s worktree was removed' };
+    try {
+      const d = await worktrees.diff(t.worktree.path, t.worktree.base);
+      const stat = await refreshDiffStat(id);
+      return { ok: true, ...d, stat, branch: t.worktree.branch, base: t.worktree.base, path: t.worktree.path };
+    } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('board:removeWorktree', async (_e, id) => {
+    const t = board.get(id);
+    if (!t || !t.worktree) throw new Error('this task has no worktree');
+    const pane = runner.paneOf(id);
+    if (pane && !pane.exited) throw new Error('close the task’s terminal first');
+    const r = await worktrees.remove(t.worktree);
+    // Keep the record: the branch still holds the work.
+    board.setWorktree(id, { ...t.worktree, removed: true });
+    runner.emit('changed');
+    return r;
+  });
+
+  ipcMain.handle('board:get', () => boardSnapshot());
+  wireTime();
+  // One planner per project. Not a task: it does not count toward the limit.
+  ipcMain.handle('board:openPlanner', async (_e, cwd) => {
+    const live = ptys.list().find((s) => s.planner && !s.exited && (s.projectCwd || s.cwd) === cwd);
+    if (live) return live;
+    const meta = await createSession({ cwd, title: `Plan · ${projectName(cwd)}`, planner: true });
+    send('session:created', meta);
+    return meta;
+  });
+  ipcMain.handle('board:wait', (_e, { id, waitingFor }) => {
+    const t = board.setWaiting(id, waitingFor);
+    runner.emit('changed');
+    return t;
+  });
+
+  ipcMain.handle('rules:list', (_e, cwd) => ({
+    rules: board.rulesFor(cwd),
+    version: board.rulesVersion(cwd),
+    running: ptys.list().filter((s) => !s.exited && (s.projectCwd || s.cwd) === cwd && s.profileId !== 'shell').length,
+  }));
+  ipcMain.handle('rules:add', (_e, { cwd, text }) => {
+    const r = board.addRule(cwd, text);
+    store.addProject(cwd);
+    saveRuleToKnowledge(cwd, r.text);
+    return { rule: r, told: announceRules(cwd, `added "${r.text}"`) };
+  });
+  ipcMain.handle('rules:update', (_e, { cwd, id, text }) => {
+    const r = board.updateRule(cwd, id, text);
+    saveRuleToKnowledge(cwd, r.text);
+    return { rule: r, told: announceRules(cwd, `changed a rule to "${r.text}"`) };
+  });
+  ipcMain.handle('rules:remove', (_e, { cwd, id }) => {
+    const gone = board.rulesFor(cwd).find((r) => r.id === id);
+    board.removeRule(cwd, id);
+    return { told: announceRules(cwd, `removed "${gone ? gone.text : id}"`) };
+  });
+  ipcMain.handle('board:create', async (_e, o) => {
+    const t = board.create(o || {});
+    store.addProject(t.cwd);
+    runner.emit('changed');
+    if (o && o.start) await runner.start(t.id);
+    return board.get(t.id);
+  });
+  ipcMain.handle('board:update', (_e, { id, patch }) => {
+    const t = board.update(id, patch);
+    // The task's terminal carries its name.
+    const pane = runner.paneOf(id);
+    if (pane && pane.title !== t.title) send('session:status', ptys.setTitle(pane.id, t.title));
+    runner.emit('changed');
+    return t;
+  });
+  ipcMain.handle('board:move', (_e, { id, status }) => runner.move(id, status));
+  ipcMain.handle('board:start', (_e, id) => runner.start(id));
+  ipcMain.handle('board:remove', (_e, id) => { runner.remove(id); focus.taskRemoved(id); return true; });
+  ipcMain.handle('board:setLimit', async (_e, { cwd, limit }) => {
+    const v = board.setLimit(cwd, limit);
+    runner.emit('changed');
+    await runner.pump();
+    return v;
+  });
+  ipcMain.handle('board:setGlobalLimit', async (_e, limit) => {
+    const v = board.setGlobalLimit(limit);
+    runner.emit('changed');
+    await runner.pump();
+    return v;
+  });
+}
+
 function wireIpc() {
   ipcMain.handle('sessions:list', () => ptys.list());
-  ipcMain.handle('sessions:create', async (_e, opts) => {
-    const o = opts || {};
-    if (o.cwd) store.addProject(o.cwd);
-    // Explicit ids win over the project's bindings, so a one-off session can
-    // opt into a different environment without changing the binding.
-    const ids = o.envSetIds || (o.cwd ? store.envSetsFor(o.cwd) : []);
-    const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
-    const profile = profileFor(o.cwd, o.profileId);
-    const dropped = profiles.unsupported(profile);
-    const jejakSessionId = newJejakSessionId(profile);
-    return ptys.create({
-      ...o,
-      command: o.command || profiles.commandFor(profile),
-      args: buildArgs(profile, instructions, prePrompts, jejakSessionId),
-      jejakSessionId,
-      env: vars, envSetIds: ids, envSetNames: names, envWarnings: warnings,
-      instructionCount: profile.instructions.mode === 'none' ? 0 : instructions.length,
-      prePromptCount: profile.prompt.mode === 'none' ? 0 : prePrompts.length,
-      profileId: profile.id, profileLabel: profile.label, rules: profile.rules,
-      // Say what this agent cannot carry rather than dropping it silently.
-      envWarnings: [...warnings, ...(dropped.length && (instructions.length || prePrompts.length)
-        ? [`${profile.label} has no way to take ${dropped.join(' or ')} — that part of the context was not applied.`]
-        : [])],
-    });
-  });
+  ipcMain.handle('sessions:create', (_e, opts) => createSession(opts || {}));
 
   // Context is owned by the session. Changing it rewrites the live context file
   // at once; the process's own env keeps its spawn-time values until a restart.
@@ -350,13 +988,24 @@ function wireIpc() {
     const ids = envSetIds || (current ? current.envSetIds : []) || [];
     const { vars, warnings, names, instructions, prePrompts } = await envs.resolveMany(ids);
     const profile = profileFor(null, (current || {}).profileId);
-    const jejakSessionId = newJejakSessionId(profile);
-    return ptys.restart(id, {
-      vars, args: buildArgs(profile, instructions, prePrompts, jejakSessionId),
-      jejakSessionId,
+    const agentSessionId = newAgentSessionId(profile);
+    // A task's restarted terminal is a fresh conversation, so it gets the
+    // task's opening message again.
+    const task = current && current.taskId ? board.get(current.taskId) : null;
+    const projectCwd = current ? (current.projectCwd || current.cwd) : null;
+    const rules = projectRules(projectCwd, profile);
+    const prompts = [...rules.prompts, ...prePrompts, ...(task ? [openingPrompt(task)] : [])];
+    const info = ptys.restart(id, {
+      vars, args: buildArgs(profile, [...rules.instructions, ...instructions], prompts, { id: agentSessionId }),
+      agentSessionId,
       envSetIds: ids, envSetNames: names, envWarnings: warnings,
-      instructionCount: instructions.length, prePromptCount: prePrompts.length,
+      instructionCount: instructions.length, prePromptCount: prompts.length,
     });
+    ptys.setRulesInfo(id, { count: rules.count, via: rules.via, version: rules.version });
+    // A restart is a new conversation; a task resumes the new one from now on.
+    if (task) board.setSessionId(task.id, agentSessionId);
+    if (current && current.taskId) runner.emit('changed');
+    return ptys.list().find((s) => s.id === id) || info;
   });
 
   // ---- general context (the global CLAUDE.md every session reads) ----
@@ -387,12 +1036,24 @@ function wireIpc() {
   ipcMain.handle('general:backups', () => general.backups());
   ipcMain.handle('general:restore', (_e, name) => general.restore(name));
   ipcMain.handle('sessions:kill', (_e, id) => ptys.kill(id));
-  ipcMain.handle('sessions:remove', (_e, id) => { ptys.remove(id); updateBadge(); });
+  ipcMain.handle('sessions:remove', async (_e, id) => {
+    const info = ptys.list().find((s) => s.id === id);
+    ptys.remove(id);
+    focus.paneEnded(id);
+    updateBadge();
+    if (info && info.taskId) await runner.paneClosed(info.taskId);
+  });
   ipcMain.handle('sessions:replay', (_e, id) => ptys.replay(id));
   ipcMain.handle('sessions:screenText', (_e, id) => ptys.screenText(id));
-  ipcMain.handle('artifacts:forSession', (_e, id) => {
+  // What a terminal's session produced, from the knowledge server's
+  // "sessionArtifacts" call. Never rejects: a missing or broken server shows
+  // as a message in the panel.
+  ipcMain.handle('artifacts:forSession', async (_e, id) => {
     const info = ptys.list().find((s) => s.id === id);
-    return jejakBridge.artifactsForSession(info ? info.jejakSessionId : null);
+    if (!knowledge.mapped('sessionArtifacts')) return { ok: false, unavailable: true, artifacts: [] };
+    if (!info || !info.agentSessionId) return { ok: true, artifacts: [] };
+    try { return { ok: true, artifacts: await knowledge.sessionArtifacts({ 'session.id': info.agentSessionId }) }; }
+    catch (err) { return { ok: false, artifacts: [], error: err.message }; }
   });
   ipcMain.handle('sessions:markRead', (_e, id) => {
     activeSessionId = id;
@@ -592,12 +1253,15 @@ function wireIpc() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   store = new Store(path.join(app.getPath('userData'), 'seamux.json'));
   secrets = new SecretStore(path.join(app.getPath('userData'), 'seamux-secrets.json'));
   envs = new EnvManager(secrets);
   general = new GeneralContext(process.env.SEAMUX_GENERAL_CONTEXT || undefined);
   wirePtys();
+  wireBoard();
+  wireKnowledge();
+  await wireControl();
   wireIpc();
   buildMenu();
   createWindow();
@@ -612,7 +1276,7 @@ app.whenReady().then(() => {
   // Test seam: an end-to-end suite drives the real window through this.
   if (process.env.SEAMUX_E2E) {
     win.webContents.once('did-finish-load', () => {
-      require(process.env.SEAMUX_E2E)({ win, ptys, store, app });
+      require(process.env.SEAMUX_E2E)({ win, ptys, store, app, board, runner, knowledge, focus, timeTracker, view });
     });
   }
 
@@ -625,4 +1289,11 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => { if (ptys) ptys.dispose(); });
+app.on('before-quit', () => {
+  // Time counted since the last flush, and a focus session cut short.
+  if (focus) focus.stop('ended');
+  if (timeTracker) timeTracker.stop();
+  if (ptys) ptys.dispose();
+  if (knowledge) knowledge.close();
+  if (control) control.stop();
+});

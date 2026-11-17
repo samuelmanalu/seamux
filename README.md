@@ -84,6 +84,157 @@ npx electron . -- ~/proj-a ~/proj-b          # or as arguments
 
 Projects you open are remembered in `~/Library/Application Support/Seamux/seamux.json`.
 
+## Board
+
+**⌘B** opens the board: one lane per project, one column per status. Each task
+is a card, and a card owns exactly one terminal running one agent, so you can
+see what every terminal is for and what comes next.
+
+- **⌘N** new task: a title, a brief, and the agent (or the project's default).
+  The brief is sent to the agent as its opening message.
+- **Start** opens the task's terminal. Open a running card (**Enter** or
+  double-click) to go to its terminal; **⌘B** comes back.
+- **Limits.** Each lane header shows live task terminals against the project's
+  limit (`2 / 3`); click it to change the limit. There is also an overall limit
+  across projects in the board's header. Idle terminals count. A task started
+  beyond a limit waits in **Queued** and starts by itself when a terminal closes
+  or ends.
+- **Resume.** Closing a task's terminal sends it back to Ready. Starting it
+  again continues the same Claude Code conversation (`claude --resume`) instead
+  of beginning a new one. After a restart of Seamux, tasks that were running
+  wait in Ready to be resumed.
+- **Moving.** Drag a card within its lane, or press **M**. Moving a running
+  task to Review or Done keeps its terminal running until you close it. A task
+  whose terminal is live cannot be deleted.
+- **Status follows the terminal.** A started task sits in **Running** while its
+  agent works and in **Needs you** when it asks something or finishes its turn.
+  **Waiting on others** is for reviews, deploy watches or another team: moving a
+  card there asks what it waits for, and the card shows that and for how long.
+- **Next step.** When a Claude Code agent stops, its latest message becomes the
+  card's next step, so the board says where each piece of work stands.
+- **Claude Code hooks.** Claude terminals also get Seamux's hooks (through
+  `--settings`, which adds to your own hooks rather than replacing them): a
+  sent prompt marks the task Running, a notification marks it Needs you in
+  Claude's own words, and a finished turn gives the exact last message. A
+  status reported this way holds until the terminal prints something new; other
+  agents rely on reading the screen.
+- **Peek (Space).** Look at a task's terminal from the board and answer a quick
+  prompt (1, 2, 3, Enter, Esc, or a typed reply) without leaving it.
+- **Keys on the board:** arrows or **H J K L** to move between cards, **S**
+  start, **E** edit, **N** new task, **⌘J** jump to the next terminal that needs
+  you. Backlog and Done are hidden until you turn them on.
+
+### Planning
+
+**Plan** in a project's lane (or **P**) opens the project's **planner**: a
+terminal beside the board whose agent is told to turn goals into tasks rather
+than write code. It is not a task and does not count toward the project's
+limit; there is one per project.
+
+The planner adds cards with the `seamux` command, which every Seamux terminal
+has on its PATH:
+
+```
+seamux task add "Write the deploy guide" --brief "Cover rollback too" --after t_1a2b3c4d5e
+seamux task list
+```
+
+New cards land in **Backlog** for you to review, and appear on the board as
+they are made. `--after` makes a task wait for another: until that one is
+Done, its card says what it waits for and it cannot start. Dependencies can
+also be set in a task's Edit dialog. The command talks to the app over an
+owner-only socket in Seamux's data folder.
+
+### Worktrees and review
+
+When a project allows more than one terminal at once and is in git, each task
+gets its **own git worktree and branch** (`seamux/<title>-<id>`) at its first
+start, so agents working in parallel never edit the same files. The worktree
+lives in Seamux's data folder, never inside your repository, and the main
+checkout is left alone. A task can also be set to always use its own worktree
+or always the project's folder; where it runs is fixed once it has started,
+because its conversation and its changes live there.
+
+- Cards show **+/- line counts** since the task started, refreshed whenever the
+  agent stops. **Diff** (or **D**) shows every change: commits, uncommitted
+  edits and new files.
+- **⌘I** opens the task panel beside its terminal: brief, next step, branch,
+  changes, links (MRs, tickets) and the rules the terminal received.
+- **Remove worktree** (in a task's Edit dialog) deletes the folder but keeps the
+  branch with every commit. It is refused while the task's terminal runs or
+  while anything is uncommitted. Starting the task again checks the branch out
+  at the same folder, so its conversation resumes.
+- A new worktree has only what git tracks: install dependencies and copy any
+  ignored files (`.env`) the task needs.
+
+### Project rules
+
+Rules are written once per project (**Rules** in a lane, or **⌘⇧P**) and every
+terminal in the project gets them at launch: Claude Code in its system prompt,
+so they hold for the whole session and survive compaction; an agent without
+that option (Gemini CLI) in its opening message. A plain shell gets none.
+
+- **Promote a rule (⌘⇧R).** Select the text of a rule in any terminal and
+  press ⌘⇧R; it opens prefilled in the project's rules.
+- **Changes reach running terminals.** Adding, editing or removing a rule
+  types a notice with the full current list into every running agent terminal
+  of the project, at its next prompt.
+- **The Rules chip** in the top bar says what the terminal on screen received:
+  `Rules 2 ✓`, or a warning when it has none or an old copy.
+
+### Knowledge server
+
+Seamux can use any MCP server you have installed as a knowledge base (View →
+**Knowledge Server…**). Connect it by command (a local server) or by URL, with
+optional headers or browser sign-in (OAuth); header values and sign-in tokens
+are kept in Seamux's encrypted store. Then map the calls Seamux makes to that
+server's own tools:
+
+| Call | When | Placeholders |
+|---|---|---|
+| **Save** | a project rule is added or changed | `{rule}`, `{project.path}`, `{project.name}` |
+| **Import rules** | **Import from knowledge server…** in a project's rules; you pick which to add | `{project.path}`, `{project.name}` |
+| **Session artifacts** | the **Artifacts** panel (⌘⇧A) for a terminal | `{session.id}` |
+
+Each call names a tool and gives its arguments as JSON with placeholders.
+Results can be JSON or text; for text, an optional line pattern keeps only
+matching lines (its first group, if any, is the value). Leave a tool empty to
+turn that call off; the Artifacts button only appears when its call is set up.
+
+With **agent access** on, every Claude Code terminal also gets the server
+through `--mcp-config`, so agents can search and save knowledge themselves.
+
+**Test connection** checks the settings on screen without saving them.
+**Fill in the Jejak example** shows a complete mapping for one such server;
+nothing in Seamux depends on it.
+
+### Time and focus
+
+Every task counts its time in four parts, shown on the card (time worked, with
+the split on hover) and in the task panel (⌘I):
+
+| Part | Counts while |
+|---|---|
+| **Agent working** | its terminal is working |
+| **You on it** | its terminal is in front of you (or peeked at from the board), the window is focused, and you have used the computer in the last two minutes |
+| **Blocked on you** | its agent is waiting for your answer |
+| **Waiting on others** | it sits in Waiting on others |
+
+A card turns its time red when the task has spent more time blocked on you
+than being worked on. Time is written to disk every half minute and on quit;
+a machine that sleeps counts at most 30 seconds for the gap.
+
+**Focus mode** (⌘⇧F, or F on a card) gives one task's terminal the window for
+25, 50, 90 or any number of minutes up to 240, starting the terminal if
+needed. The sidebar and board step aside; switching to another terminal, the
+board or ⌘J asks you to end focus first. Other tasks that start needing you
+are held: no notification and no badge, only a count in the focus bar. When
+time is up you get one notification and a summary of what waited; ⌘J then
+takes you to it. Ending early (⌘⇧F, **End focus**, or the terminal closing)
+is recorded on the task as a session that did not complete.
+
+Tasks are stored in `~/Library/Application Support/Seamux/board.json`.
+
 ## Context
 
 Two kinds, both reached from the **Context** screen (**⌘E**, or **+** in the sidebar).
@@ -272,6 +423,20 @@ window and asserts the badge tracks an actual turn:
 ```
 SEAMUX_LIVE_DIR=/some/project SEAMUX_E2E=$PWD/test/live-claude.js npx electron .
 ```
+
+### End-to-end campaign
+
+`npm run test:campaign` runs every scenario and edge case against the real
+window: four suites in parallel (each its own app and data folder), then a
+two-part restart that quits a busy board and checks what comes back.
+
+| Suite | Covers |
+|---|---|
+| lifecycle | limits and queue across projects, terminals ending by themselves, restarts, editing and deleting, drag and drop, keyboard edges, hostile and Unicode text, missing folders and agents, 200 tasks |
+| rules and knowledge | rule changes and notices, duplicates, plain sessions, promote; a knowledge server that crashes, finds nothing or fails; settings the dialog refuses; headers; agent access off |
+| worktrees, planner, hooks | no git or no commits, a worktree deleted by hand, parallel tasks in one repo, binary/deleted/renamed/large files in a diff; reopening and running two planners, seamux errors; hooks from plain, ended or unknown terminals |
+| restart | running, queued, waiting and blocked tasks, rules, limits and the knowledge server after quitting; resuming in the worktree; the seamux command on the new socket |
+| time and focus | each kind of time and when it stops (window in the background, board in front, peek); time chips and the task panel; focus lengths refused, starting, held tasks, switching refused, +5 min, running out, ending early, the terminal closing, a queued or blocked task; time and a focus session written at quit |
 
 ## Layout
 

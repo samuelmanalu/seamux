@@ -1,9 +1,9 @@
 'use strict';
 
-// Turns Jejak `artifact` records into card fields. Loaded as a classic script
+// Turns artifact records from the knowledge server into card fields. Loaded as a classic script
 // in the renderer (exposes window.SeamuxArtifacts) and require()d by tests.
 //
-// Jejak writes content in two shapes:
+// Records usually carry content in one of two shapes:
 //   "Document: <title> (<path>) — <summary>"
 //   "Artifact: <title> — <desc> (<url>)"
 // Titles may themselves contain parentheses and " — ", so the location is not
@@ -12,7 +12,7 @@
 (function (root) {
   const GENERIC_TITLE = /^(artifact|document|untitled|-+)?$/i;
 
-  // Jejak has stored URLs with a trailing comma picked up from prose.
+  // Some servers store URLs with a trailing comma picked up from prose.
   function cleanLocation(loc) {
     const s = String(loc || '').trim();
     return /^https?:\/\//.test(s) ? s.replace(/[),.;]+$/, '') : s;
