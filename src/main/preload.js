@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('seamux', {
   restartSession: (id, envSetIds) => ipcRenderer.invoke('sessions:restart', { id, envSetIds }),
   markRead: (id) => ipcRenderer.invoke('sessions:markRead', id),
   screenText: (id) => ipcRenderer.invoke('sessions:screenText', id),
+  artifactsForSession: (id) => ipcRenderer.invoke('artifacts:forSession', id),
 
   write: (id, data) => ipcRenderer.send('sessions:write', { id, data }),
   resize: (id, cols, rows) => ipcRenderer.send('sessions:resize', { id, cols, rows }),
@@ -61,6 +62,7 @@ contextBridge.exposeInMainWorld('seamux', {
   onFocusSession: (fn) => ipcRenderer.on('ui:focusSession', (_e, p) => fn(p)),
   onToggleDebug: (fn) => ipcRenderer.on('ui:toggleDebug', () => fn()),
   onToggleEnv: (fn) => ipcRenderer.on('ui:toggleEnv', () => fn()),
+  onToggleArtifacts: (fn) => ipcRenderer.on('ui:toggleArtifacts', () => fn()),
   onNewSession: (fn) => ipcRenderer.on('ui:newSession', () => fn()),
   onOpenProject: (fn) => ipcRenderer.on('ui:openProject', (_e, p) => fn(p)),
 });

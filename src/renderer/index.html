@@ -42,6 +42,7 @@
         </div>
         <div id="crumb-right">
           <button id="session-context" title="Context for this session">Context</button>
+          <button id="session-artifacts" title="Artifacts from this session (⌘⇧A)">Artifacts</button>
           <span id="crumb-state"></span>
         </div>
       </header>
@@ -116,12 +117,23 @@
         </div>
         <pre id="debug-screen"></pre>
       </section>
+
+      <section id="artifactspanel" hidden>
+        <header id="artifacts-head">
+          <strong>Artifacts</strong>
+          <span id="artifacts-sub" class="dim small"></span>
+          <span class="spacer"></span>
+          <button id="artifacts-close" title="Close (⌘⇧A)">×</button>
+        </header>
+        <div id="artifacts-body"></div>
+      </section>
     </main>
   </div>
 
   <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
   <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
   <script src="../../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="artifact-card.js"></script>
   <script src="renderer.js"></script>
   <script src="env-ui.js"></script>
 </body>

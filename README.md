@@ -45,6 +45,27 @@ npm install     # downloads Electron, compiles node-pty
 npm start
 ```
 
+Or install it as an app you launch from the Dock or Spotlight:
+
+```
+CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac --dir
+codesign --force --deep --sign - dist/mac-arm64/Seamux.app   # Apple Silicon refuses a broken signature
+ditto dist/mac-arm64/Seamux.app /Applications/Seamux.app
+```
+
+An app launched that way gets launchd's bare `PATH`, so at startup the packaged app reads
+your login shell's `PATH` to find `claude` (`src/main/shell-path.js`).
+
+On Node 26, `npm install` can leave Electron uninstalled: npm 11 holds back its install
+script, and even run by hand its `extract-zip` exits mid-archive without an error, leaving
+only `LICENSES.chromium.html` in `node_modules/electron/dist`. Extract the cached zip yourself:
+
+```
+rm -rf node_modules/electron/dist
+ditto -x -k ~/Library/Caches/electron/*/electron-v*-darwin-arm64.zip node_modules/electron/dist
+printf 'Electron.app/Contents/MacOS/Electron' > node_modules/electron/path.txt
+```
+
 ## Use
 
 - **⌘T** — new session (pick a project directory; runs `claude` there)
